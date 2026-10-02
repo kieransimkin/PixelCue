@@ -9,6 +9,7 @@ from PySide6.QtGui import QDesktopServices, QFont, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QPlainTextEdit,
     QScrollArea,
     QSizePolicy,
     QStatusBar,
@@ -134,6 +136,22 @@ class TagItemsWindow(QWidget):
         outer.addWidget(scroll)
 
 
+class ErrorLogDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("PixelCue errors")
+        self.resize(900, 560)
+        layout = QVBoxLayout(self)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        layout.addWidget(self.text)
+
+    def append_error(self, path: str, short: str, details: str):
+        self.text.appendPlainText(
+            f"{'=' * 80}\n{path}\n{short}\n\n{details.strip()}\n"
+        )
+
+
 class MainWindow(QMainWindow):
     def __init__(self, startup_path: str | None = None):
         super().__init__()
@@ -146,6 +164,9 @@ class MainWindow(QMainWindow):
         self.thumbs: dict[str, QPixmap] = {}
         self.records = {}
         self.tag_windows: list[TagItemsWindow] = []
+        self.error_count = 0
+        self.error_log = ErrorLogDialog(self)
+        self._first_error_shown = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -155,12 +176,18 @@ class MainWindow(QMainWindow):
         self.choose_btn = QPushButton("Select starting folder…")
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
+        self.error_btn = QPushButton("Errors: 0")
+        self.error_btn.setEnabled(False)
         self.path_label = QLabel(startup_path or "No start path selected")
         self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         top.addWidget(self.choose_btn)
         top.addWidget(self.stop_btn)
+        top.addWidget(self.error_btn)
         top.addWidget(self.path_label, 1)
         layout.addLayout(top)
+
+        self.model_label = QLabel("Model: not loaded")
+        layout.addWidget(self.model_label)
 
         self.info = QLabel("Choose a folder to begin. Hidden folders are included." if not startup_path else f"Ready to scan: {startup_path}")
         layout.addWidget(self.info)
@@ -179,6 +206,7 @@ class MainWindow(QMainWindow):
 
         self.choose_btn.clicked.connect(self.choose_folder)
         self.stop_btn.clicked.connect(self.stop_scan)
+        self.error_btn.clicked.connect(self.error_log.show)
 
     def choose_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Choose starting folder")
@@ -193,6 +221,12 @@ class MainWindow(QMainWindow):
         self.tag_counts.clear()
         self.thumbs.clear()
         self.records.clear()
+        self.error_count = 0
+        self._first_error_shown = False
+        self.error_btn.setText("Errors: 0")
+        self.error_btn.setEnabled(False)
+        self.error_log.text.clear()
+        self.model_label.setText("Model: not loaded")
         self.rebuild_cloud()
 
         self.path_label.setText(folder)
@@ -205,6 +239,8 @@ class MainWindow(QMainWindow):
         self.worker.tagged.connect(self.on_tagged)
         self.worker.record_updated.connect(self.on_record)
         self.worker.symlink_question.connect(self.ask_symlink)
+        self.worker.model_status.connect(self.on_model_status)
+        self.worker.processing_error.connect(self.on_processing_error)
         self.worker.fatal_error.connect(self.on_fatal)
         self.worker.completed.connect(self.on_completed)
         self.worker.start()
@@ -285,6 +321,32 @@ class MainWindow(QMainWindow):
 
         box.finished.connect(done)
         box.open()
+
+    def on_model_status(self, message: str):
+        self.model_label.setText(f"Model: {message}")
+
+    def on_processing_error(self, path: str, short: str, details: str):
+        self.error_count += 1
+        self.error_btn.setText(f"Errors: {self.error_count}")
+        self.error_btn.setEnabled(True)
+        self.error_log.append_error(path, short, details)
+        self.status.showMessage(short)
+
+        if not self._first_error_shown:
+            self._first_error_shown = True
+            box = QMessageBox(self)
+            box.setWindowTitle("PixelCue processing error")
+            box.setIcon(QMessageBox.Critical)
+            box.setText(short)
+            box.setInformativeText(
+                "PixelCue will continue scanning the filesystem. "
+                "Open the Errors window for the complete diagnostic log."
+            )
+            box.setDetailedText(details)
+            box.setStandardButtons(QMessageBox.Ok)
+            box.setModal(False)
+            box.open()
+            self._error_box = box
 
     def on_fatal(self, details: str):
         QMessageBox.critical(self, "Scanner error", details)

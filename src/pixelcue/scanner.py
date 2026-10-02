@@ -23,7 +23,7 @@ from .media import (
     video_duration_seconds,
 )
 from .metadata import MagicDetector, stat_record
-from .model import JoyCaption4Bit
+from .model import JoyCaption4Bit, JoyCaptionError
 
 
 @dataclass
@@ -39,6 +39,8 @@ class ScanWorker(QThread):
     tagged = Signal(str, object, bytes)      # path, list[str], representative thumbnail bytes
     record_updated = Signal(str, object)     # path, record dict
     symlink_question = Signal(str, str)      # path, target
+    model_status = Signal(str)
+    processing_error = Signal(str, str, str)  # path, short, details
     fatal_error = Signal(str)
     completed = Signal(object)               # list[dict]
 
@@ -47,7 +49,7 @@ class ScanWorker(QThread):
         self.start_dir = Path(start_dir)
         self.todo: deque[QueueItem] = deque([QueueItem(self.start_dir)])
         self.detector = MagicDetector()
-        self.captioner = JoyCaption4Bit()
+        self.captioner = JoyCaption4Bit(status_callback=self.model_status.emit)
         self.records: dict[str, dict[str, Any]] = {}
         self.visited_dirs: set[tuple[int, int]] = set()
         self.pending_symlinks: dict[str, str] = {}
@@ -55,6 +57,7 @@ class ScanWorker(QThread):
         self.cv = threading.Condition()
         self.stop_requested = False
         self.tag_counts = Counter()
+        self.captioning_disabled_reason: str | None = None
 
     def request_stop(self) -> None:
         with self.cv:
@@ -96,19 +99,56 @@ class ScanWorker(QThread):
         st = path.stat()
         return int(st.st_dev), int(st.st_ino)
 
-    def _process_image(self, path: Path, rec: dict[str, Any]) -> None:
-        self.status.emit("Tagging image with JoyCaption (4-bit)…")
-        image = open_image(path)
+
+    def _record_error(
+        self,
+        path: Path,
+        rec: dict[str, Any],
+        stage: str,
+        exc: BaseException,
+        details: str | None = None,
+    ) -> None:
+        short = f"{stage}: {type(exc).__name__}: {exc}"
+        rec["error"] = short
+        self.processing_error.emit(str(path), short, details or traceback.format_exc())
+        self.record_updated.emit(str(path), rec)
+
+    def _captioning_available(self, path: Path, rec: dict[str, Any]) -> bool:
+        if self.captioning_disabled_reason is None:
+            return True
+        rec["error"] = (
+            "Tagging skipped because JoyCaption failed earlier in this scan: "
+            + self.captioning_disabled_reason
+        )
+        self.record_updated.emit(str(path), rec)
+        return False
+
+
+def _process_image(self, path: Path, rec: dict[str, Any]) -> None:
+    rec["category"] = "image"
+    if not self._captioning_available(path, rec):
+        return
+
+    self.status.emit("Tagging image with JoyCaption (4-bit)…")
+    image = open_image(path)
+    try:
         tags = self.captioner.tags_for_image(image)
-        rec["tags"] = tags
-        rec["category"] = "image"
-        rec["extra_metadata"].update({"width": image.width, "height": image.height})
-        thumb = thumbnail_jpeg(image)
-        for t in tags:
-            self.tag_counts[t] += 1
-        self.tagged.emit(str(path), tags, thumb)
+    except JoyCaptionError as e:
+        self.captioning_disabled_reason = str(e).splitlines()[0]
+        raise
+
+    rec["tags"] = tags
+    rec["extra_metadata"].update({"width": image.width, "height": image.height})
+    thumb = thumbnail_jpeg(image)
+    for t in tags:
+        self.tag_counts[t] += 1
+    self.tagged.emit(str(path), tags, thumb)
 
     def _process_video(self, path: Path, rec: dict[str, Any]) -> None:
+        rec["category"] = "video"
+        if not self._captioning_available(path, rec):
+            return
+
         self.status.emit("Sampling video frames and tagging with JoyCaption (4-bit)…")
         all_tags: dict[str, str] = {}
         sampled_times: list[float] = []
@@ -122,12 +162,16 @@ class ScanWorker(QThread):
             frame_count += 1
             if not thumb:
                 thumb = thumbnail_jpeg(frame)
-            for tag in self.captioner.tags_for_image(frame):
+            try:
+                frame_tags = self.captioner.tags_for_image(frame)
+            except JoyCaptionError as e:
+                self.captioning_disabled_reason = str(e).splitlines()[0]
+                raise
+            for tag in frame_tags:
                 all_tags.setdefault(tag.casefold(), tag)
 
         tags = list(all_tags.values())
         rec["tags"] = tags
-        rec["category"] = "video"
         rec["extra_metadata"].update({
             "duration_seconds": video_duration_seconds(path),
             "sampled_frame_times_seconds": sampled_times,
@@ -138,11 +182,15 @@ class ScanWorker(QThread):
         self.tagged.emit(str(path), tags, thumb)
 
     def _process_archive(self, path: Path, rec: dict[str, Any]) -> None:
+        rec["category"] = "archive"
+        if not self._captioning_available(path, rec):
+            return
+
         self.status.emit("Sampling media from archive…")
         sampled = sample_archive(path, sample_size=5)
         all_tags: dict[str, str] = {}
         thumb = b""
-        sampled_names: list[str] = list(sampled.member_names)
+        member_errors: list[str] = []
 
         try:
             for member_path in sampled.paths:
@@ -161,21 +209,30 @@ class ScanWorker(QThread):
 
                     if not thumb:
                         thumb = thumbnail_jpeg(image)
-                    for tag in self.captioner.tags_for_image(image):
+
+                    try:
+                        member_tags = self.captioner.tags_for_image(image)
+                    except JoyCaptionError as e:
+                        self.captioning_disabled_reason = str(e).splitlines()[0]
+                        raise
+
+                    for tag in member_tags:
                         all_tags.setdefault(tag.casefold(), tag)
-                except Exception:
-                    continue
+                except JoyCaptionError:
+                    raise
+                except Exception as e:
+                    member_errors.append(f"{member_path.name}: {type(e).__name__}: {e}")
         finally:
             sampled.cleanup()
 
         tags = list(all_tags.values())
         rec["tags"] = tags
-        rec["category"] = "archive"
         rec["extra_metadata"].update({
             "archive_total_members": sampled.total_members,
             "archive_media_members": sampled.total_media_members,
-            "archive_sample_size": len(sampled_names),
-            "archive_sampled_members": sampled_names,
+            "archive_sample_size": len(sampled.member_names),
+            "archive_sampled_members": list(sampled.member_names),
+            "archive_member_errors": member_errors,
         })
         for t in tags:
             self.tag_counts[t] += 1
@@ -193,8 +250,14 @@ class ScanWorker(QThread):
                 self._process_archive(path, rec)
             else:
                 rec["category"] = "file"
+        except JoyCaptionError as e:
+            self._record_error(path, rec, "JoyCaption", e, details=str(e))
+            self.status.emit(
+                "JoyCaption failed; tagging is disabled for the rest of this scan. "
+                "Filesystem scanning continues."
+            )
         except Exception as e:
-            rec["error"] = f"{type(e).__name__}: {e}"
+            self._record_error(path, rec, "Processing", e)
         finally:
             self.record_updated.emit(str(path), rec)
 

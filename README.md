@@ -25,9 +25,9 @@ and then include path, extension, libmagic MIME/type description, size, timestam
 
 The app loads:
 
-`fancyfeast/llama-joycaption-beta-one-hf-llava`
+`heavlav/llama-joycaption-beta-one-hf-llava-4bit`
 
-with Transformers `BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4")`.
+from a pre-quantized BitsAndBytes NF4 checkpoint.
 
 An NVIDIA CUDA GPU is strongly recommended. The first media item triggers the model download/load from Hugging Face. Model weights can be several GB and are cached by Hugging Face.
 
@@ -63,6 +63,28 @@ pip install -e .
 pixelcue
 ```
 
+
+
+## Model download and diagnostics
+
+PixelCue explicitly downloads its default 4-bit JoyCaption checkpoint into its own user cache on first use. The checkpoint is approximately **5.96 GB**.
+
+The GUI shows model state separately from the current filesystem item:
+
+- `Downloading JoyCaption 4-bit model ...`
+- `JoyCaption 4-bit: downloaded`
+- `Loading JoyCaption 4-bit model onto GPU ...`
+- `JoyCaption 4-bit: ready ...`
+
+On Windows the cache location is under the normal per-user application cache returned by `platformdirs`; PixelCue displays the exact path while downloading. You can override it with:
+
+```bash
+set PIXELCUE_MODEL_DIR=D:\Models\PixelCue
+```
+
+You can also override the model repository with `PIXELCUE_JOYCAPTION_MODEL`.
+
+A model or inference error is no longer silent. The first one appears immediately in the GUI and every error is retained in the **Errors** window with PyTorch/CUDA/Transformers/BitsAndBytes diagnostics. After a backend-level JoyCaption failure, PixelCue continues the filesystem scan but does not repeatedly retry the broken backend for every image.
 
 ## Starting a scan from the command line
 
