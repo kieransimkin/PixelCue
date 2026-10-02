@@ -135,7 +135,7 @@ class TagItemsWindow(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, startup_path: str | None = None):
         super().__init__()
         self.setWindowTitle("PixelCue")
         self.resize(1100, 760)
@@ -155,14 +155,14 @@ class MainWindow(QMainWindow):
         self.choose_btn = QPushButton("Select starting folder…")
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
-        self.path_label = QLabel("No folder selected")
+        self.path_label = QLabel(startup_path or "No start path selected")
         self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         top.addWidget(self.choose_btn)
         top.addWidget(self.stop_btn)
         top.addWidget(self.path_label, 1)
         layout.addLayout(top)
 
-        self.info = QLabel("Choose a folder to begin. Hidden folders are included.")
+        self.info = QLabel("Choose a folder to begin. Hidden folders are included." if not startup_path else f"Ready to scan: {startup_path}")
         layout.addWidget(self.info)
 
         self.scroll = QScrollArea()

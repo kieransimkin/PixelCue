@@ -1,0 +1,2 @@
+[console_scripts]
+pixelcue = pixelcue.main:main

@@ -1,3 +1,26 @@
+Metadata-Version: 2.4
+Name: pixelcue
+Version: 0.1.0
+Summary: AI-assisted visual media scanner and tag browser with 4-bit JoyCaption caption tagging.
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: PySide6>=6.7
+Requires-Dist: Pillow>=10.4
+Requires-Dist: torch>=2.4
+Requires-Dist: transformers<5,>=4.51
+Requires-Dist: accelerate>=1.6
+Requires-Dist: bitsandbytes>=0.45
+Requires-Dist: av>=12
+Requires-Dist: python-magic>=0.4.27; platform_system != "Windows"
+Requires-Dist: python-magic-bin>=0.4.14; platform_system == "Windows"
+Requires-Dist: py7zr>=0.22
+Requires-Dist: rarfile>=4.2
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Dynamic: license-file
+
 # PixelCue
 
 PixelCue is a desktop Python tool that scans a filesystem using an explicit FIFO **todo list**, tags images/videos with **JoyCaption Beta One loaded in 4-bit NF4**, samples media inside archives, builds a live tag cloud, and exports a TSV containing every file discovered.
@@ -62,25 +85,6 @@ pip install --upgrade pip
 pip install -e .
 pixelcue
 ```
-
-
-## Starting a scan from the command line
-
-With no argument, PixelCue opens normally and lets you choose a starting folder:
-
-```bash
-pixelcue
-```
-
-If the first argument is a valid filesystem path, PixelCue opens the GUI and immediately starts scanning from that path:
-
-```bash
-pixelcue ~/Pictures
-pixelcue "/mnt/archive/Photos 2025"
-pixelcue ./single-image.jpg
-```
-
-The path may be a directory, ordinary file, or symbolic link. Invalid paths are ignored and PixelCue falls back to the normal folder-selection screen.
 
 ## Notes on archive support
 
