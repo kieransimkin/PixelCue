@@ -31,7 +31,7 @@ The API is intentionally conservative: a cache miss is `None`. It never falls ba
 
 ## Installation
 
-Install from PyPI after the first production release:
+Install the current release from PyPI:
 
 ```bash
 python -m pip install thumbmoves

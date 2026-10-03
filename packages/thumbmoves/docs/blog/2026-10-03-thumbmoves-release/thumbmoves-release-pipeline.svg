@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title description">
+  <title id="title">ThumbMoves 0.1.0 release pipeline</title>
+  <desc id="description">A diagram showing ThumbMoves moving from its version tag through cross-platform GitHub Actions checks to verified PyPI and GitHub Release artifacts.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08111f"/>
+      <stop offset="1" stop-color="#12233d"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#51d7c7"/>
+      <stop offset="1" stop-color="#66a8ff"/>
+    </linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#b8c7de" stroke-opacity="0.055" stroke-width="1"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#020711" flood-opacity="0.55"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#66a8ff"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#background)"/>
+  <rect width="1600" height="900" fill="url(#grid)"/>
+  <circle cx="1385" cy="110" r="240" fill="#51d7c7" opacity="0.06"/>
+  <circle cx="190" cy="810" r="310" fill="#66a8ff" opacity="0.07"/>
+
+  <text x="92" y="92" fill="#8da2c2" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="5">A SMALL LIBRARY, RELEASED PROPERLY</text>
+  <text x="92" y="166" fill="#f7fbff" font-family="Segoe UI, Arial, sans-serif" font-size="64" font-weight="800">ThumbMoves 0.1.0</text>
+  <text x="92" y="214" fill="#bfd0e8" font-family="Segoe UI, Arial, sans-serif" font-size="28">Cross-platform access to thumbnails already held in the operating system cache.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="92" y="296" width="388" height="316" rx="30" fill="#111f34" stroke="#2e496b" stroke-width="2"/>
+    <rect x="566" y="296" width="470" height="316" rx="30" fill="#111f34" stroke="#2e496b" stroke-width="2"/>
+    <rect x="1122" y="296" width="386" height="140" rx="30" fill="#111f34" stroke="#2e496b" stroke-width="2"/>
+    <rect x="1122" y="472" width="386" height="140" rx="30" fill="#111f34" stroke="#2e496b" stroke-width="2"/>
+  </g>
+
+  <rect x="126" y="330" width="118" height="38" rx="19" fill="#173d50"/>
+  <text x="185" y="356" text-anchor="middle" fill="#66e3d4" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="700">SOURCE</text>
+  <text x="126" y="421" fill="#f7fbff" font-family="Segoe UI, Arial, sans-serif" font-size="37" font-weight="800">thumbmoves-v0.1.0</text>
+  <text x="126" y="467" fill="#9db2cf" font-family="Consolas, monospace" font-size="24">commit 9562e03</text>
+  <text x="126" y="531" fill="#d7e4f5" font-family="Segoe UI, Arial, sans-serif" font-size="24">One universal wheel</text>
+  <text x="126" y="567" fill="#d7e4f5" font-family="Segoe UI, Arial, sans-serif" font-size="24">One source distribution</text>
+
+  <rect x="602" y="330" width="102" height="38" rx="19" fill="#1d3155"/>
+  <text x="653" y="356" text-anchor="middle" fill="#91bdff" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="700">CHECKS</text>
+  <text x="602" y="420" fill="#f7fbff" font-family="Segoe UI, Arial, sans-serif" font-size="38" font-weight="800">GitHub Actions</text>
+  <g fill="#d7e4f5" font-family="Segoe UI, Arial, sans-serif" font-size="24">
+    <text x="602" y="472">✓ Python 3.10–3.13</text>
+    <text x="602" y="512">✓ Linux, macOS and Windows</text>
+    <text x="602" y="552">✓ Tests, metadata and wheel smoke test</text>
+    <text x="602" y="592">✓ SHA-256 checksums and attestations</text>
+  </g>
+
+  <rect x="1156" y="326" width="88" height="34" rx="17" fill="#173d50"/>
+  <text x="1200" y="349" text-anchor="middle" fill="#66e3d4" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="700">PYPI</text>
+  <text x="1156" y="398" fill="#f7fbff" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="800">Trusted Publishing</text>
+
+  <rect x="1156" y="502" width="102" height="34" rx="17" fill="#1d3155"/>
+  <text x="1207" y="525" text-anchor="middle" fill="#91bdff" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="700">GITHUB</text>
+  <text x="1156" y="574" fill="#f7fbff" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="800">Release assets</text>
+
+  <path d="M480 454H548" fill="none" stroke="#66a8ff" stroke-width="8" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M1036 454H1080V366H1104" fill="none" stroke="#66a8ff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <path d="M1036 454H1080V542H1104" fill="none" stroke="#66a8ff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+
+  <rect x="92" y="680" width="1416" height="126" rx="28" fill="#0b1729" stroke="#284562" stroke-width="2"/>
+  <rect x="92" y="680" width="16" height="126" rx="8" fill="url(#accent)"/>
+  <text x="142" y="728" fill="#8da2c2" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" letter-spacing="3">PUBLIC VERIFICATION</text>
+  <text x="142" y="773" fill="#f7fbff" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="700">PyPI and GitHub hashes match  •  Trusted Publisher attestation verified  •  Clean install and CLI check passed</text>
+
+  <text x="92" y="858" fill="#7489a8" font-family="Segoe UI, Arial, sans-serif" font-size="20">Released 3 October 2026  •  MIT  •  Python 3.10+</text>
+</svg>
