@@ -92,3 +92,19 @@ Plain `v0.1.0` tags are reserved for repository-level PixelCue releases and are 
 - **Corrective action:** require `setuptools>=77.0.3`, use the SPDX expression `license = "MIT"`, declare `license-files = ["LICENSE"]`, and remove the deprecated licence classifier.
 - **Verification:** build validation checks both distribution metadata and the included licence file; `twine check --strict` remains part of CI.
 - **Limit:** this is build metadata only and does not change ThumbMoves' MIT licence terms.
+
+### The Windows launcher cannot find the uv-managed Python 3.13 runtime
+
+- **Symptom (3 October 2026):** `py -3.13 -m venv ...` reported `No suitable Python runtime found`, although `py -0p` listed `-V:Astral/CPython3.13.14` and the PixelCue environment was running Python 3.13.14.
+- **Cause:** the short `-3.13` launcher form selects PythonCore releases, not the separately registered Astral/uv runtime. Python's Windows documentation says that runtimes from other distributors may require the company-qualified `-V:Company/Tag` form.
+- **Corrective action:** inspect `py -0p`, then select the exact registered runtime with `py -V:Astral/CPython3.13.14 -m venv <dedicated-check-path>` for the release install check. Do not install another interpreter merely to satisfy the short launcher form.
+- **Verification:** the qualified runtime created a fresh environment, installed `thumbmoves==0.1.0` from public PyPI, and imported version 0.1.0 successfully.
+- **Limit:** the distributor and tag are local runtime identifiers and may differ on another machine. Re-read the installed-runtime list rather than copying this identifier blindly. Source: [Python on Windows](https://docs.python.org/3/using/windows.html#basic-use), accessed 3 October 2026.
+
+### `python -m thumbmoves` cannot run the installed command
+
+- **Symptom (3 October 2026):** the public package installed and imported successfully, but `python -m thumbmoves --help` failed with `No module named thumbmoves.__main__; 'thumbmoves' is a package and cannot be directly executed`.
+- **Cause:** `python -m <package>` executes that package's `__main__.py`; ThumbMoves intentionally exposes its CLI through the `thumbmoves` console-script entry point instead.
+- **Corrective action:** smoke-test the installed `Scripts\thumbmoves.exe --help` on Windows, or the corresponding `thumbmoves --help` command after activating the environment.
+- **Verification:** the console script displayed the documented path, output, size and format options and exited successfully after a clean install from PyPI.
+- **Limit:** add a minimal `thumbmoves/__main__.py` only if supporting both invocation forms becomes an explicit compatibility requirement. Source: [Python `__main__` documentation](https://docs.python.org/3/library/__main__.html#main-py-in-python-packages), accessed 3 October 2026.
