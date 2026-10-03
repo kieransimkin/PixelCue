@@ -1,0 +1,178 @@
+name: ThumbMoves release
+
+on:
+  push:
+    tags: ['thumbmoves-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing ThumbMoves version tag (for example thumbmoves-v0.1.0)
+        required: true
+        type: string
+      target:
+        description: TestPyPI rehearsal, or all production destinations
+        required: true
+        type: choice
+        default: testpypi
+        options: [testpypi, production]
+
+concurrency:
+  group: thumbmoves-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: github.repository == 'kieransimkin/PixelCue'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
+      commit: ${{ steps.metadata.outputs.commit }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      target: ${{ steps.route.outputs.target }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', inputs.tag) }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Validate tag, source versions and exact commit
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: >-
+          python scripts/thumbmoves_release.py metadata
+          --tag "$RELEASE_TAG"
+          --repository "$GITHUB_REPOSITORY"
+          --github-output "$GITHUB_OUTPUT"
+      - name: Select publishing destinations
+        id: route
+        env:
+          TARGET: ${{ github.event_name == 'push' && 'production' || inputs.target }}
+        run: echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+
+  checks:
+    needs: prepare
+    uses: ./.github/workflows/thumbmoves-ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.commit }}
+
+  testpypi:
+    needs: [prepare, checks]
+    if: needs.prepare.outputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/thumbmoves/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: thumbmoves-python-dist
+          path: dist/
+      - name: Publish the tested distributions to TestPyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/
+          repository-url: https://test.pypi.org/legacy/
+          attestations: true
+          skip-existing: false
+
+  pypi:
+    needs: [prepare, checks]
+    if: needs.prepare.outputs.target == 'production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/thumbmoves/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: thumbmoves-python-dist
+          path: dist/
+      - name: Publish the tested distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/
+          attestations: true
+          skip-existing: false
+
+  github-release:
+    needs: [prepare, checks]
+    if: needs.prepare.outputs.target == 'production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: thumbmoves-python-dist
+          path: dist/
+      - name: Revalidate artifacts and write SHA-256 checksums
+        run: python scripts/thumbmoves_release.py dist dist --checksums dist/SHA256SUMS.txt
+      - name: Attach artifacts while draft, then publish the release
+        shell: bash
+        run: |
+          if DRAFT=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
+            if [ "$DRAFT" != true ]; then
+              mkdir -p "$RUNNER_TEMP/existing-release"
+              gh release download "$TAG" -D "$RUNNER_TEMP/existing-release" \
+                -p '*.whl' -p '*.tar.gz' -p 'SHA256SUMS.txt'
+              for file in dist/*.whl dist/*.tar.gz dist/SHA256SUMS.txt; do
+                cmp "$file" "$RUNNER_TEMP/existing-release/$(basename "$file")"
+              done
+              echo 'The published release already has the identical artifacts.'
+              exit 0
+            fi
+          else
+            gh release create "$TAG" --verify-tag --draft \
+              --title "ThumbMoves $VERSION" --generate-notes
+          fi
+          gh release upload "$TAG" dist/*.whl dist/*.tar.gz dist/SHA256SUMS.txt --clobber
+          gh release edit "$TAG" --draft=false --prerelease="$PRERELEASE"
+
+  summary:
+    if: always()
+    needs: [prepare, checks, testpypi, pypi, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Show each destination's actual result
+        env:
+          JOBS: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
+              stream.write('## ThumbMoves release results\n\n| Job | Result |\n|---|---|\n')
+              for name, info in json.loads(os.environ['JOBS']).items():
+                  stream.write(f"| {name} | {info['result']} |\n")
+              stream.write('\nA skipped package repository was not published.\n')
+          PY

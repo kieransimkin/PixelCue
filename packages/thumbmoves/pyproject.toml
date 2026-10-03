@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thumbmoves"
+version = "0.1.0"
+description = "ThumbMoves: cross-platform Python access to native operating-system thumbnail caches."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Kieran Simkin"}]
+keywords = ["thumbnail", "cache", "windows", "freedesktop", "quicklook"]
+dependencies = [
+  "Pillow>=10.0",
+  "comtypes>=1.4; platform_system == 'Windows'",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Topic :: Desktop Environment :: File Managers",
+  "Topic :: Multimedia :: Graphics",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+thumbmoves = "thumbmoves.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/kieransimkin/PixelCue/tree/main/packages/thumbmoves"
+Repository = "https://github.com/kieransimkin/PixelCue"
+Issues = "https://github.com/kieransimkin/PixelCue/issues"
+Releases = "https://github.com/kieransimkin/PixelCue/releases"
+
+[tool.setuptools.packages.find]
+where = ["src"]
