@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import mimetypes
 import os
 import stat as statmod
 import subprocess
@@ -64,7 +63,13 @@ def exif_json(path: Path) -> str:
 
 
 class MagicDetector:
-    """Thread-local-ish wrapper: create one per scanner worker."""
+    """Content-based file identification using libmagic / the `file` database.
+
+    Filename extensions are deliberately *not* used as a MIME fallback here.
+    PixelCue must not enqueue a file for JoyCaption merely because its name ends
+    in .jpg/.mp4/etc. Windows Recycle Bin `$I...JPG` metadata files are a good
+    example of why content identification needs to win over the suffix.
+    """
 
     def __init__(self) -> None:
         self._mime = None
@@ -77,30 +82,83 @@ class MagicDetector:
             self._mime = None
             self._desc = None
 
-    def identify(self, path: Path) -> tuple[str, str]:
+    def identify_with_source(self, path: Path) -> tuple[str, str, str]:
         if self._mime is not None and self._desc is not None:
             try:
-                return (
-                    str(self._mime.from_file(str(path))),
-                    str(self._desc.from_file(str(path))),
-                )
+                mime = str(self._mime.from_file(str(path))).strip().lower()
+                desc = str(self._desc.from_file(str(path))).strip()
+                if mime:
+                    return mime, desc, "libmagic"
             except Exception:
                 pass
 
-        # Fall back to the system `file` command when available.
+        # Fall back to the system `file` command when available. This still uses
+        # libmagic's content database; it is not extension guessing.
         try:
             mime = subprocess.run(
                 ["file", "-b", "--mime-type", "--", str(path)],
                 capture_output=True, text=True, check=True, timeout=15
-            ).stdout.strip()
+            ).stdout.strip().lower()
             desc = subprocess.run(
                 ["file", "-b", "--", str(path)],
                 capture_output=True, text=True, check=True, timeout=15
             ).stdout.strip()
-            return mime, desc
+            if mime:
+                return mime, desc, "file/libmagic"
         except Exception:
-            guessed, _ = mimetypes.guess_type(path.name)
-            return guessed or "application/octet-stream", ""
+            pass
+
+        # Unknown means unknown. Do not manufacture an image/video MIME from the
+        # extension, because that would put unverified files onto the AI queue.
+        return "application/octet-stream", "unknown binary data", "unknown"
+
+    def identify(self, path: Path) -> tuple[str, str]:
+        mime, desc, _source = self.identify_with_source(path)
+        return mime, desc
+
+
+    def identify_buffer_with_source(self, data: bytes) -> tuple[str, str, str]:
+        """Identify bytes by content without consulting a filename."""
+        if not data:
+            return "application/x-empty", "empty", "libmagic"
+
+        if self._mime is not None and self._desc is not None:
+            try:
+                mime = str(self._mime.from_buffer(data)).strip().lower()
+                desc = str(self._desc.from_buffer(data)).strip()
+                if mime:
+                    return mime, desc, "libmagic"
+            except Exception:
+                pass
+
+        # `file -` reads the supplied bytes from stdin and still uses libmagic.
+        try:
+            mime_proc = subprocess.run(
+                ["file", "-b", "--mime-type", "-"],
+                input=data,
+                capture_output=True,
+                check=True,
+                timeout=15,
+            )
+            desc_proc = subprocess.run(
+                ["file", "-b", "-"],
+                input=data,
+                capture_output=True,
+                check=True,
+                timeout=15,
+            )
+            mime = mime_proc.stdout.decode("utf-8", "replace").strip().lower()
+            desc = desc_proc.stdout.decode("utf-8", "replace").strip()
+            if mime:
+                return mime, desc, "file/libmagic"
+        except Exception:
+            pass
+
+        return "application/octet-stream", "unknown binary data", "unknown"
+
+    def identify_buffer(self, data: bytes) -> tuple[str, str]:
+        mime, desc, _source = self.identify_buffer_with_source(data)
+        return mime, desc
 
 
 def stat_record(path: Path, detector: MagicDetector, *, follow_symlinks: bool = False) -> dict[str, Any]:
@@ -150,9 +208,13 @@ def stat_record(path: Path, detector: MagicDetector, *, follow_symlinks: bool = 
         return rec
 
     if path.is_file():
-        mime, desc = detector.identify(path)
+        mime, desc, source = detector.identify_with_source(path)
         rec["mime_type"] = mime
         rec["file_type"] = desc
-        rec["exif"] = exif_json(path)
+        rec["extra_metadata"]["type_detection"] = source
+        # Only ask Pillow for EXIF after content-based MIME identification says
+        # this is an image. This avoids probing arbitrary files as pictures.
+        if mime.startswith("image/"):
+            rec["exif"] = exif_json(path)
 
     return rec

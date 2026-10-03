@@ -1,9 +1,11 @@
 PySide6>=6.7
 Pillow>=10.4
-torch>=2.4
-transformers<5,>=4.51
+torch>=2.14.1
+transformers>=4.53
 accelerate>=1.6
 bitsandbytes>=0.45
+huggingface-hub>=0.30
+platformdirs>=4.2
 av>=12
 py7zr>=0.22
 rarfile>=4.2
@@ -16,3 +18,8 @@ python-magic-bin>=0.4.14
 
 [dev]
 pytest>=8
+
+[faces]
+deepface>=0.0.95
+tensorflow==2.21.0
+tf-keras==2.21.0

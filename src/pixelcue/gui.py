@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QProgressBar,
     QScrollArea,
     QSizePolicy,
     QStatusBar,
@@ -114,7 +115,10 @@ class ThumbButton(QPushButton):
 
 class TagItemsWindow(QWidget):
     def __init__(self, tag: str, paths: list[str], thumbs: dict[str, QPixmap], parent=None):
-        super().__init__(parent)
+        # Deliberately create a true top-level window. Keeping a Python reference
+        # in MainWindow controls lifetime; Qt parentage must not turn this into a
+        # child/tool-style popup.
+        super().__init__(None, Qt.Window)
         self.setWindowTitle(f"{tag} — {len(paths)} item(s)")
         self.resize(900, 650)
 
@@ -134,6 +138,31 @@ class TagItemsWindow(QWidget):
 
         scroll.setWidget(host)
         outer.addWidget(scroll)
+
+
+class FaceClusterButton(QPushButton):
+    def __init__(self, cluster: dict, pixmap: QPixmap | None, callback, parent=None):
+        super().__init__(parent)
+        self.cluster = cluster
+        count = int(cluster.get("size", len(cluster.get("paths", []))))
+        self.setText(f"Person cluster {cluster.get('cluster_id', '?')}  ({count})")
+        self.setToolTip(
+            f"{count} image(s)\nRepresentative: {cluster.get('representative_path', '')}"
+        )
+        self.setFixedSize(190, 175)
+        self.setIconSize(QSize(150, 112))
+        if pixmap and not pixmap.isNull():
+            from PySide6.QtGui import QIcon
+            self.setIcon(QIcon(pixmap))
+        self.clicked.connect(lambda: callback(cluster))
+
+
+class FaceClusterWindow(TagItemsWindow):
+    def __init__(self, cluster: dict, thumbs: dict[str, QPixmap], parent=None):
+        cluster_id = cluster.get("cluster_id", "?")
+        paths = list(cluster.get("paths", []))
+        super().__init__(f"Person cluster {cluster_id}", paths, thumbs, None)
+
 
 
 class ErrorLogDialog(QDialog):
@@ -164,9 +193,13 @@ class MainWindow(QMainWindow):
         self.thumbs: dict[str, QPixmap] = {}
         self.records = {}
         self.tag_windows: list[TagItemsWindow] = []
+        self.face_cluster_windows: list[FaceClusterWindow] = []
+        self.face_clusters: list[dict] = []
         self.error_count = 0
         self.error_log = ErrorLogDialog(self)
         self._first_error_shown = False
+        self.model_download_total = 0
+        self.model_total_is_exact = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -186,22 +219,50 @@ class MainWindow(QMainWindow):
         top.addWidget(self.path_label, 1)
         layout.addLayout(top)
 
+        model_row = QHBoxLayout()
         self.model_label = QLabel("Model: not loaded")
-        layout.addWidget(self.model_label)
+        self.model_progress = QProgressBar()
+        self.model_progress.setTextVisible(False)
+        self.model_progress.setFixedWidth(180)
+        self.model_progress.hide()
+        model_row.addWidget(self.model_label, 1)
+        model_row.addWidget(self.model_progress)
+        layout.addLayout(model_row)
 
         self.info = QLabel("Choose a folder to begin. Hidden folders are included." if not startup_path else f"Ready to scan: {startup_path}")
         layout.addWidget(self.info)
+
+        tags_title = QLabel("<b>JoyCaption tags</b>")
+        layout.addWidget(tags_title)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.cloud_host = QWidget()
         self.cloud = FlowLayout(self.cloud_host)
         self.scroll.setWidget(self.cloud_host)
-        layout.addWidget(self.scroll, 1)
+        layout.addWidget(self.scroll, 2)
+
+        faces_title = QLabel("<b>Face identity clusters</b>")
+        layout.addWidget(faces_title)
+
+        self.face_scroll = QScrollArea()
+        self.face_scroll.setWidgetResizable(True)
+        self.face_scroll.setMinimumHeight(190)
+        self.face_cluster_host = QWidget()
+        self.face_cluster_layout = FlowLayout(self.face_cluster_host)
+        self.face_scroll.setWidget(self.face_cluster_host)
+        layout.addWidget(self.face_scroll, 1)
+        self.rebuild_face_clusters()
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-        self.count_label = QLabel("0 files")
+        self.count_label = QLabel("0 files discovered")
+        self.queue_label = QLabel("Media: 0 queued / 0 tagged")
+        self.face_queue_label = QLabel("Faces: 0 queued / 0 analysed")
+        self.video_queue_label = QLabel("Video sampling: 0 queued / 0 done")
+        self.status.addPermanentWidget(self.face_queue_label)
+        self.status.addPermanentWidget(self.video_queue_label)
+        self.status.addPermanentWidget(self.queue_label)
         self.status.addPermanentWidget(self.count_label)
 
         self.choose_btn.clicked.connect(self.choose_folder)
@@ -221,12 +282,21 @@ class MainWindow(QMainWindow):
         self.tag_counts.clear()
         self.thumbs.clear()
         self.records.clear()
+        self.face_clusters.clear()
         self.error_count = 0
         self._first_error_shown = False
         self.error_btn.setText("Errors: 0")
         self.error_btn.setEnabled(False)
         self.error_log.text.clear()
-        self.model_label.setText("Model: not loaded")
+        self.queue_label.setText("Media: 0 queued / 0 processed")
+        self.face_queue_label.setText("Faces: 0 queued / 0 analysed")
+        self.video_queue_label.setText("Video sampling: 0 queued / 0 done")
+        self.rebuild_face_clusters()
+        self.model_download_total = 0
+        self.model_total_is_exact = False
+        self.model_label.setText("Model: preparing…")
+        self.model_progress.setRange(0, 0)
+        self.model_progress.show()
         self.rebuild_cloud()
 
         self.path_label.setText(folder)
@@ -235,11 +305,16 @@ class MainWindow(QMainWindow):
         self.worker = ScanWorker(folder, self)
         self.worker.status.connect(self.status.showMessage)
         self.worker.current_path.connect(lambda p: self.info.setText(f"Processing: {p}"))
-        self.worker.discovered_count.connect(lambda n: self.count_label.setText(f"{n} files"))
+        self.worker.media_queue_count.connect(self.on_media_queue_count)
+        self.worker.face_queue_count.connect(self.on_face_queue_count)
+        self.worker.video_sample_queue_count.connect(self.on_video_sample_queue_count)
+        self.worker.face_clusters_updated.connect(self.on_face_clusters_updated)
+        self.worker.discovered_count.connect(lambda n: self.count_label.setText(f"{n} files discovered"))
         self.worker.tagged.connect(self.on_tagged)
         self.worker.record_updated.connect(self.on_record)
         self.worker.symlink_question.connect(self.ask_symlink)
         self.worker.model_status.connect(self.on_model_status)
+        self.worker.model_progress.connect(self.on_model_progress)
         self.worker.processing_error.connect(self.on_processing_error)
         self.worker.fatal_error.connect(self.on_fatal)
         self.worker.completed.connect(self.on_completed)
@@ -249,6 +324,53 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.request_stop()
             self.stop_btn.setEnabled(False)
+
+    def on_media_queue_count(self, waiting: int, completed: int):
+        self.queue_label.setText(
+            f"Media: {waiting} queued / {completed} processed"
+        )
+
+    def on_video_sample_queue_count(self, waiting: int, completed: int):
+        self.video_queue_label.setText(
+            f"Video sampling: {waiting} queued / {completed} done"
+        )
+
+    def on_face_queue_count(self, waiting: int, completed: int):
+        self.face_queue_label.setText(
+            f"Faces: {waiting} queued / {completed} analysed"
+        )
+
+    def on_face_clusters_updated(self, clusters_obj: object):
+        self.face_clusters = list(clusters_obj or [])
+        self.rebuild_face_clusters()
+
+    def rebuild_face_clusters(self):
+        while self.face_cluster_layout.count():
+            item = self.face_cluster_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not self.face_clusters:
+            self.face_cluster_layout.addWidget(
+                QLabel("Face clusters will appear as DeepFace embeddings are analysed.")
+            )
+            return
+
+        for cluster in self.face_clusters:
+            representative = str(cluster.get("representative_path", ""))
+            btn = FaceClusterButton(
+                cluster,
+                self.thumbs.get(representative),
+                self.open_face_cluster,
+            )
+            self.face_cluster_layout.addWidget(btn)
+        self.face_cluster_host.updateGeometry()
+
+    def open_face_cluster(self, cluster: dict):
+        win = FaceClusterWindow(cluster, self.thumbs, None)
+        win.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.face_cluster_windows.append(win)
+        win.show()
 
     def on_record(self, path: str, rec: object):
         self.records[path] = rec
@@ -294,7 +416,7 @@ class MainWindow(QMainWindow):
         self.cloud_host.updateGeometry()
 
     def open_tag(self, tag: str):
-        win = TagItemsWindow(tag, list(self.tag_to_paths.get(tag, [])), self.thumbs, self)
+        win = TagItemsWindow(tag, list(self.tag_to_paths.get(tag, [])), self.thumbs, None)
         win.setAttribute(Qt.WA_DeleteOnClose, True)
         self.tag_windows.append(win)
         win.destroyed.connect(lambda: self._prune_windows())
@@ -322,8 +444,68 @@ class MainWindow(QMainWindow):
         box.finished.connect(done)
         box.open()
 
+    @staticmethod
+    def _human_bytes(value: int) -> str:
+        value = max(0, int(value))
+        units = ["bytes", "KiB", "MiB", "GiB", "TiB"]
+        number = float(value)
+        unit = units[0]
+        for unit in units:
+            if number < 1024.0 or unit == units[-1]:
+                break
+            number /= 1024.0
+        if unit == "bytes":
+            return f"{value:,} bytes"
+        return f"{number:.2f} {unit}"
+
     def on_model_status(self, message: str):
-        self.model_label.setText(f"Model: {message}")
+        low = message.casefold()
+        if "exact size confirmed" in low:
+            self.model_total_is_exact = True
+        elif "lookup timed out" in low or "lookup" in low and "failed" in low:
+            self.model_total_is_exact = False
+
+        # Do not overwrite an active quantitative download line with a transient
+        # metadata warning unless no progress denominator exists yet.
+        if "lookup timed out" not in low and "lookup" not in low:
+            self.model_label.setText(f"Model: {message}")
+        else:
+            self.status.showMessage(message, 15000)
+
+        if any(word in low for word in ("querying", "checking", "starting", "loading", "verifying")):
+            self.model_progress.setRange(0, 0)
+            self.model_progress.show()
+        elif any(word in low for word in ("complete", "cached", "ready", "failed")):
+            self.model_progress.hide()
+
+    def on_model_progress(self, done_obj: object, total_obj: object):
+        done = max(0, int(done_obj))
+        total = max(0, int(total_obj))
+        self.model_download_total = total
+
+        if total <= 0:
+            self.model_progress.setRange(0, 0)
+            self.model_progress.show()
+            self.model_label.setText(
+                f"Model: JoyCaption 4-bit downloading — {done:,} bytes received"
+            )
+            return
+
+        done = min(done, total)
+        percentage = (done / total) * 100.0
+
+        # QProgressBar uses a C++ int, so represent 0.0–100.0% as 0–1000.
+        self.model_progress.setRange(0, 1000)
+        self.model_progress.setValue(round((done / total) * 1000))
+        self.model_progress.show()
+
+        approx = "" if self.model_total_is_exact else "≈"
+        self.model_label.setText(
+            "Model: JoyCaption 4-bit downloading — "
+            f"{done:,} / {approx}{total:,} bytes "
+            f"({self._human_bytes(done)} / {approx}{self._human_bytes(total)}, "
+            f"{percentage:.1f}%)"
+        )
 
     def on_processing_error(self, path: str, short: str, details: str):
         self.error_count += 1

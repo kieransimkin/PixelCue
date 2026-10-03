@@ -1,0 +1,34 @@
+# PixelCue scan/export output — never commit generated inventories.
+*.tsv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Packaging/build output
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local model/cache data if configured inside the checkout
+.cache/
+models/

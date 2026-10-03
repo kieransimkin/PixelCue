@@ -17,11 +17,19 @@ VIDEO_EXTS = {
 
 
 def is_image(path: Path, mime: str = "") -> bool:
-    return mime.startswith("image/") or path.suffix.lower() in IMAGE_EXTS
+    # When a MIME result is available, trust content detection completely.
+    # Extension fallback is only for contexts where no magic result exists.
+    mime = (mime or "").strip().lower()
+    if mime:
+        return mime.startswith("image/")
+    return path.suffix.lower() in IMAGE_EXTS
 
 
 def is_video(path: Path, mime: str = "") -> bool:
-    return mime.startswith("video/") or path.suffix.lower() in VIDEO_EXTS
+    mime = (mime or "").strip().lower()
+    if mime:
+        return mime.startswith("video/")
+    return path.suffix.lower() in VIDEO_EXTS
 
 
 def open_image(path: Path) -> Image.Image:
@@ -69,25 +77,98 @@ def _frame_at(path: Path, seconds: float) -> Image.Image | None:
         return None
 
 
-def sample_video_frames(path: Path, interval_seconds: int = 30) -> Iterator[tuple[float, Image.Image]]:
+def _frame_fingerprint(image: Image.Image) -> tuple[float, ...]:
+    tiny = image.convert("L").resize((16, 9))
+    return tuple(float(v) / 255.0 for v in tiny.getdata())
+
+
+def _fingerprint_distance(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    if not a or len(a) != len(b):
+        return 1.0
+    return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+
+
+def _frames_at_timestamps(path: Path, timestamps: list[float]) -> list[tuple[float, Image.Image]]:
+    """Seek several timestamps while opening the container only once."""
+    import av
+
+    output: list[tuple[float, Image.Image]] = []
+    try:
+        with av.open(str(path)) as container:
+            if not container.streams.video:
+                return output
+            stream = container.streams.video[0]
+            for seconds in timestamps:
+                try:
+                    if stream.time_base is not None and seconds > 0:
+                        offset = int(seconds / float(stream.time_base))
+                        container.seek(offset, stream=stream, any_frame=False, backward=True)
+
+                    candidate = None
+                    for frame in container.decode(stream):
+                        candidate = frame
+                        frame_t = frame.time
+                        if seconds <= 0 or frame_t is None or frame_t >= seconds - 0.25:
+                            break
+                    if candidate is not None:
+                        output.append((seconds, candidate.to_image().convert("RGB")))
+                except Exception:
+                    # A bad seek should lose one candidate, not the whole video.
+                    continue
+    except Exception:
+        return []
+    return output
+
+
+def sample_video_frames(
+    path: Path,
+    interval_seconds: int = 30,
+    max_frames: int = 5,
+) -> Iterator[tuple[float, Image.Image]]:
+    """Select <=5 diverse frames with one container open and <=7 sparse seeks."""
+    max_frames = max(1, min(int(max_frames), 5))
     duration = video_duration_seconds(path)
-    if duration is None:
+    if duration is None or duration <= 0:
         frame = _frame_at(path, 0.0)
         if frame is not None:
             yield 0.0, frame
         return
 
-    # Include first frame and then 30, 60, ... while inside the duration.
-    timestamps = [0.0]
-    t = float(interval_seconds)
-    while t <= duration + 0.01:
-        timestamps.append(t)
-        t += interval_seconds
+    # Seven candidates is enough to improve diversity without paying for nine
+    # independent seeks. The container itself is opened only once below.
+    candidate_count = min(7, max(max_frames, max_frames + 2))
+    end = max(0.0, duration - min(0.25, duration * 0.01))
+    timestamps = (
+        [end * i / (candidate_count - 1) for i in range(candidate_count)]
+        if candidate_count > 1 else [0.0]
+    )
 
-    for ts in timestamps:
-        frame = _frame_at(path, ts)
-        if frame is not None:
+    candidates = [
+        (ts, frame, _frame_fingerprint(frame))
+        for ts, frame in _frames_at_timestamps(path, timestamps)
+    ]
+
+    if len(candidates) <= max_frames:
+        for ts, frame, _fp in candidates:
             yield ts, frame
+        return
+
+    selected = [0]
+    remaining = set(range(1, len(candidates)))
+    while remaining and len(selected) < max_frames:
+        best = max(
+            remaining,
+            key=lambda idx: min(
+                _fingerprint_distance(candidates[idx][2], candidates[j][2])
+                for j in selected
+            ),
+        )
+        selected.append(best)
+        remaining.remove(best)
+
+    for idx in sorted(selected, key=lambda i: candidates[i][0]):
+        ts, frame, _fp = candidates[idx]
+        yield ts, frame
 
 
 def first_video_frame(path: Path) -> Image.Image | None:
