@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.6 - 2026-10-08
+
+- Add an original tool-specific vector logo and PNG companion in the shared DanceFlow visual style.
+- Clarify package descriptions from reviewed documentation and KeywordMoves literal-source evidence, without claims of measured search demand.
+- Link package descriptions and READMEs to Kieran Simkin’s website and retain branding files in installable packages.
+
+
 ## 0.8.5 - 2026-10-08
 
 - Publish the reviewed local visual-keyword service with HTTP and request-scoped Socket.IO progress.

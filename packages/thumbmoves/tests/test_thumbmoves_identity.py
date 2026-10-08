@@ -5,7 +5,7 @@ ROOT = Path(__file__).parents[1]
 
 
 def test_public_package_name_and_version():
-    assert thumbmoves.__version__ == "0.1.0"
+    assert thumbmoves.__version__ == "0.1.1"
 
 
 def test_project_identity_is_thumbmoves():

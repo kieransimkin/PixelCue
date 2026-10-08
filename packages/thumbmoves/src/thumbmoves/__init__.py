@@ -15,4 +15,4 @@ __all__ = [
     "get_cached_thumbnail_bytes",
     "get_cached_thumbnail_image",
 ]
-__version__ = "0.1.0"
+__version__ = "0.1.1"

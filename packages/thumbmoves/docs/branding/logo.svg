@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">ThumbMoves logo</title>
+  <desc id="desc">Stacked previews with a cache arrow: reuse existing thumbnails. Original DanceFlow family mark by Kieran Simkin.</desc>
+  <rect x="3" y="3" width="122" height="122" rx="30" fill="#171124"/><rect x="8" y="8" width="112" height="112" rx="25" fill="none" stroke="#f5ce85" stroke-opacity=".35" stroke-width="1.5"/>
+  <g fill="none" stroke="#bff7df" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"><path d="M38 30h53v39M30 40h52v33M29 52h42v36H29zM36 80l9-12 9 8 9-10"/><path d="M87 69a16 16 0 1 1-14 25M86 61v12h12" stroke="#f5ce85"/></g>
+</svg>

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "thumbmoves"
-version = "0.1.0"
-description = "ThumbMoves: cross-platform Python access to native operating-system thumbnail caches."
+version = "0.1.1"
+description = "Cache-only thumbnail access for Windows and freedesktop, with explicit cache misses. https://kieransimkin.co.uk/"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -33,6 +33,7 @@ dev = ["pytest>=8"]
 thumbmoves = "thumbmoves.cli:main"
 
 [project.urls]
+"DanceFlow ecosystem" = "https://kieransimkin.co.uk/danceflow/"
 Homepage = "https://github.com/kieransimkin/PixelCue/tree/main/packages/thumbmoves"
 Repository = "https://github.com/kieransimkin/PixelCue"
 Issues = "https://github.com/kieransimkin/PixelCue/issues"
@@ -40,3 +41,6 @@ Releases = "https://github.com/kieransimkin/PixelCue/releases"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/thumbmoves/branding" = ["docs/branding/logo.svg", "docs/branding/logo-monochrome.svg", "docs/branding/logo.png", "docs/branding/README.md"]

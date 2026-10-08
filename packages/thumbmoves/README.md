@@ -1,5 +1,12 @@
 # ThumbMoves
 
+[![ThumbMoves logo](https://raw.githubusercontent.com/kieransimkin/PixelCue/thumbmoves-v0.1.1/packages/thumbmoves/docs/branding/logo.png)](https://kieransimkin.co.uk/danceflow/)
+
+By **[Kieran Simkin](https://kieransimkin.co.uk/)** · [DanceFlow ecosystem](https://kieransimkin.co.uk/danceflow/) · [Vector logo and usage guide](docs/branding/README.md).
+
+Cache-only thumbnail access for Windows and freedesktop, with explicit cache misses. https://kieransimkin.co.uk/
+
+
 Part of the DanceFlow ecosystem, **ThumbMoves** is a small cross-platform Python library for retrieving **existing thumbnails from the operating system's thumbnail cache** without opening the original media file.
 
 ```python

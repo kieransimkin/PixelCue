@@ -1,5 +1,12 @@
 # PixelCue
 
+[![PixelCue logo](https://raw.githubusercontent.com/kieransimkin/PixelCue/v0.8.6/docs/branding/logo.png)](https://kieransimkin.co.uk/danceflow/)
+
+By **[Kieran Simkin](https://kieransimkin.co.uk/)** · [DanceFlow ecosystem](https://kieransimkin.co.uk/danceflow/) · [Vector logo and usage guide](docs/branding/README.md).
+
+Local visual-media tagging and search with selectable vision-language models and a REST service. https://kieransimkin.co.uk/
+
+
 PixelCue is a local visual-media analysis service and desktop Python tool. It tags images and sampled video/archive content with a selectable local vision-language model (VLM). The desktop app scans a filesystem using an explicit FIFO **todo list**, builds a live tag cloud, and exports a TSV containing every file discovered.
 
 ## Behaviour

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pixelcue"
-version = "0.8.5"
-description = "Local visual-media keyword service and desktop tag browser with selectable VLMs."
+version = "0.8.6"
+description = "Local visual-media tagging and search with selectable vision-language models and a REST service. https://kieransimkin.co.uk/"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = {text = "MIT"}
@@ -43,6 +43,11 @@ dev = ["pytest>=8", "httpx2>=2,<3", "python-socketio[client]>=5.12,<6"]
 pixelcue = "pixelcue.main:main"
 pixelcue-server = "pixelcue.server:main"
 
+[project.urls]
+Homepage = "https://kieransimkin.co.uk/"
+"DanceFlow ecosystem" = "https://kieransimkin.co.uk/danceflow/"
+Repository = "https://github.com/kieransimkin/PixelCue"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -61,3 +66,6 @@ torch = { index = "pytorch-cu132" }
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/thumbmoves/tests"]
 addopts = "--import-mode=importlib"
+
+[tool.setuptools.data-files]
+"share/pixelcue/branding" = ["docs/branding/logo.svg", "docs/branding/logo-monochrome.svg", "docs/branding/logo.png", "docs/branding/README.md"]
