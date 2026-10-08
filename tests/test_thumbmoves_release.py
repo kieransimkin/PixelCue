@@ -13,16 +13,16 @@ SPEC.loader.exec_module(release)
 
 
 def test_thumbmoves_source_versions_agree():
-    assert release.source_version() == "0.1.1"
+    assert release.source_version() == "0.1.2"
 
 
 def test_release_tag_is_namespaced_for_pixelcue_monorepo():
     metadata = release.release_metadata(
-        "thumbmoves-v0.1.1", "kieransimkin/PixelCue", check_git=False
+        "thumbmoves-v0.1.2", "kieransimkin/PixelCue", check_git=False
     )
     assert metadata == {
-        "tag": "thumbmoves-v0.1.1",
-        "version": "0.1.1",
+        "tag": "thumbmoves-v0.1.2",
+        "version": "0.1.2",
         "prerelease": "false",
     }
 

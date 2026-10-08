@@ -6,3 +6,4 @@ recursive-include packages/thumbmoves *.py *.toml *.md *.svg *.png LICENSE
 global-exclude __pycache__ *.py[cod] *.sqlite3 *.tsv
 
 recursive-include docs/branding *.svg *.png *.md
+include AGENTS.md CONTRIBUTING.md
