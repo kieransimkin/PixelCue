@@ -1,5 +1,7 @@
 # PixelCue
 
+Install the published package with Python 3.13: `pip install pixelcue`. Tagged releases run the maintained test suite, validate source/package identity, and publish the same checksum-verified wheel and source archive to PyPI and GitHub. The GitHub Actions trusted publisher is restricted to `kieransimkin/PixelCue`, workflow `release.yml`, environment `pypi`; no PyPI password or API token is stored in source.
+
 [![PixelCue logo](https://raw.githubusercontent.com/kieransimkin/PixelCue/v0.8.6/docs/branding/logo.png)](https://kieransimkin.co.uk/danceflow/)
 
 By **[Kieran Simkin](https://kieransimkin.co.uk/)** · [DanceFlow ecosystem](https://kieransimkin.co.uk/danceflow/) · [Vector logo and usage guide](docs/branding/README.md).
