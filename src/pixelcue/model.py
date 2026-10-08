@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -43,6 +44,69 @@ If the image is NSFW, include the exact tag NSFW.
 If any person's face is visibly present, include the exact tag FaceIdentity.
 Do not identify who a person is. FaceIdentity only means that a visible human face is present.
 Keep the tag list concise and avoid duplicate tags."""
+
+
+@dataclass(frozen=True)
+class TaggerProfile:
+    id: str
+    label: str
+    repo_id: str
+    backend: str
+    description: str
+    approximate_parameters: str
+
+
+TAGGER_PROFILES: dict[str, TaggerProfile] = {
+    "joycaption": TaggerProfile(
+        id="joycaption",
+        label="JoyCaption Beta One (best tags, heavy)",
+        repo_id=DEFAULT_MODEL_ID,
+        backend="joycaption",
+        description="Highest-detail tagging; runtime NF4 with CPU offload.",
+        approximate_parameters="~8B-class",
+    ),
+    "smolvlm-256m": TaggerProfile(
+        id="smolvlm-256m",
+        label="SmolVLM 256M (tiny / fastest)",
+        repo_id="HuggingFaceTB/SmolVLM-256M-Instruct",
+        backend="smolvlm",
+        description="Very small image VLM for fast keyword tagging.",
+        approximate_parameters="256M",
+    ),
+    "smolvlm-500m": TaggerProfile(
+        id="smolvlm-500m",
+        label="SmolVLM 500M (light / better quality)",
+        repo_id="HuggingFaceTB/SmolVLM-500M-Instruct",
+        backend="smolvlm",
+        description="Small image VLM with a useful quality/speed balance.",
+        approximate_parameters="500M",
+    ),
+    "smolvlm2-256m": TaggerProfile(
+        id="smolvlm2-256m",
+        label="SmolVLM2 256M (tiny, newer)",
+        repo_id="HuggingFaceTB/SmolVLM2-256M-Video-Instruct",
+        backend="smolvlm",
+        description="Newer tiny multimodal model; used here for still-image tagging.",
+        approximate_parameters="256M",
+    ),
+    "smolvlm2-500m": TaggerProfile(
+        id="smolvlm2-500m",
+        label="SmolVLM2 500M (light, newer)",
+        repo_id="HuggingFaceTB/SmolVLM2-500M-Video-Instruct",
+        backend="smolvlm",
+        description="Newer 500M multimodal model; still lightweight on the 4060 Ti.",
+        approximate_parameters="500M",
+    ),
+}
+
+DEFAULT_TAGGER_PROFILE = os.environ.get("PIXELCUE_TAGGER_MODEL", "joycaption")
+if DEFAULT_TAGGER_PROFILE not in TAGGER_PROFILES:
+    DEFAULT_TAGGER_PROFILE = "joycaption"
+
+
+def available_tagger_profiles() -> list[TaggerProfile]:
+    return list(TAGGER_PROFILES.values())
+
 
 
 class JoyCaptionError(RuntimeError):
@@ -143,8 +207,12 @@ class JoyCaption4Bit:
         model_dir: str | Path | None = None,
         status_callback: Callable[[str], None] | None = None,
         progress_callback: Callable[[int, int], None] | None = None,
+        display_name: str = "JoyCaption Beta One",
+        fallback_total_bytes: int | None = MODEL_FALLBACK_TOTAL_BYTES,
     ) -> None:
         self.model_id = model_id
+        self.display_name = display_name
+        self.fallback_total_bytes = fallback_total_bytes
         self.model_dir = Path(
             os.environ.get("PIXELCUE_MODEL_DIR", str(model_dir or default_model_dir()))
         ).expanduser()
@@ -236,7 +304,7 @@ class JoyCaption4Bit:
         """Fetch exact file sizes from Hugging Face metadata."""
         from huggingface_hub import HfApi
 
-        self._status(f"Querying JoyCaption repository metadata: {self.model_id}")
+        self._status(f"Querying {self.display_name} repository metadata: {self.model_id}")
         info = HfApi().model_info(
             self.model_id,
             files_metadata=True,
@@ -461,7 +529,7 @@ class JoyCaption4Bit:
         from huggingface_hub import snapshot_download
 
         self.model_dir.mkdir(parents=True, exist_ok=True)
-        self._status(f"Checking JoyCaption 4-bit model cache: {self.model_dir}")
+        self._status(f"Checking {self.display_name} model cache: {self.model_dir}")
 
         # A previously saved exact manifest lets us verify a fully cached model
         # without touching the network at all.
@@ -476,7 +544,7 @@ class JoyCaption4Bit:
                 self._downloaded_path = self.model_dir
                 self._progress(cached_total, cached_total)
                 self._status(
-                    f"JoyCaption 4-bit: cached and complete at {self.model_dir}"
+                    f"{self.display_name}: cached and complete at {self.model_dir}"
                 )
                 return self.model_dir
 
@@ -524,15 +592,15 @@ class JoyCaption4Bit:
         download_thread.start()
 
         # Default denominator is useful immediately for the standard model.
-        if self.model_id == DEFAULT_MODEL_ID:
-            total = MODEL_FALLBACK_TOTAL_BYTES
+        if self.fallback_total_bytes:
+            total = int(self.fallback_total_bytes)
             total_is_exact = False
         else:
             total = 0
             total_is_exact = False
 
         self._status(
-            f"Downloading JoyCaption 4-bit model to {self.model_dir} "
+            f"Downloading {self.display_name} model to {self.model_dir} "
             f"(exact repository size is being queried in parallel)"
         )
 
@@ -553,13 +621,13 @@ class JoyCaption4Bit:
                     total = int(exact_total)
                     total_is_exact = True
                     self._status(
-                        f"Downloading JoyCaption 4-bit model to {self.model_dir} "
+                        f"Downloading {self.display_name} model to {self.model_dir} "
                         f"(exact size confirmed)"
                     )
                 else:
                     error = metadata_result.get("error")
                     self._status(
-                        "JoyCaption repository-size lookup timed out/failed; "
+                        f"{self.display_name} repository-size lookup timed out/failed; "
                         "download is continuing without waiting for it"
                         + (f": {type(error).__name__}" if error else "")
                     )
@@ -610,7 +678,7 @@ class JoyCaption4Bit:
         error = download_result.get("error")
         if error is not None:
             raise JoyCaptionError(
-                f"JoyCaption model download failed: "
+                f"{self.display_name} model download failed: "
                 f"{type(error).__name__}: {error}\n\n"
                 f"Downloaded locally: {done:,} bytes"
                 + (f" / {total:,} bytes" if total > 0 else "")
@@ -642,7 +710,7 @@ class JoyCaption4Bit:
         self._downloaded_path = Path(
             str(download_result.get("path") or self.model_dir)
         )
-        self._status(f"JoyCaption 4-bit: download complete at {self.model_dir}")
+        self._status(f"{self.display_name}: download complete at {self.model_dir}")
         return self._downloaded_path
 
     def _resolve_component(self, name: str):
@@ -918,3 +986,132 @@ class JoyCaption4Bit:
                 f"JoyCaption inference failed: {type(e).__name__}: {e}\n\n"
                 f"{self.diagnostics()}{dtype_details}"
             ) from e
+
+
+class SmolVLMTagger(JoyCaption4Bit):
+    """Lightweight Transformers VLM backend with the same tagger interface."""
+
+    def __init__(self, profile: TaggerProfile, status_callback=None, progress_callback=None):
+        from platformdirs import user_cache_dir
+
+        model_dir = Path(user_cache_dir("PixelCue", "DanceFlow")) / "models" / profile.id
+        super().__init__(
+            model_id=profile.repo_id,
+            model_dir=model_dir,
+            status_callback=status_callback,
+            progress_callback=progress_callback,
+            display_name=profile.label,
+            fallback_total_bytes=None,
+        )
+        self.profile = profile
+
+    def validate_runtime(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except Exception as e:
+            raise JoyCaptionError(
+                f"PyTorch is required for {self.display_name}: {e}"
+            ) from e
+
+    def load(self) -> None:
+        if self.loaded:
+            return
+
+        model_path = self.ensure_downloaded()
+        self._status(f"Loading {self.display_name} …")
+        try:
+            import torch
+            from transformers import AutoModelForImageTextToText, AutoProcessor
+
+            self.processor = AutoProcessor.from_pretrained(
+                str(model_path), local_files_only=True
+            )
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                str(model_path),
+                torch_dtype=dtype,
+                local_files_only=True,
+                low_cpu_mem_usage=True,
+                attn_implementation="eager",
+            ).to(device)
+            self.model.eval()
+            self.device = device
+            target = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
+            self._status(f"{self.display_name}: ready on {target}")
+        except Exception as e:
+            self.model = None
+            self.processor = None
+            raise JoyCaptionError(
+                f"{self.display_name} model load failed: {type(e).__name__}: {e}\n\n"
+                f"{self.diagnostics()}"
+            ) from e
+
+    def tags_for_image(self, image: Image.Image) -> list[str]:
+        self.load()
+        try:
+            import torch
+
+            assert self.processor is not None and self.model is not None
+            image = image.convert("RGB")
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": TAG_PROMPT},
+                ],
+            }]
+            prompt = self.processor.apply_chat_template(
+                messages, add_generation_prompt=True
+            )
+            inputs = self.processor(text=prompt, images=[image], return_tensors="pt")
+            for key, value in list(inputs.items()):
+                if hasattr(value, "to"):
+                    value = value.to(self.device)
+                    if key == "pixel_values" and getattr(value, "dtype", None) is not None:
+                        value = value.to(
+                            torch.bfloat16 if self.device.type == "cuda" else torch.float32
+                        )
+                    inputs[key] = value
+
+            with torch.inference_mode():
+                output = self.model.generate(
+                    **inputs,
+                    max_new_tokens=192,
+                    do_sample=False,
+                    use_cache=True,
+                )[0]
+
+            input_len = inputs["input_ids"].shape[1]
+            text = self.processor.batch_decode(
+                output[input_len:].unsqueeze(0),
+                skip_special_tokens=True,
+            )[0].strip()
+            tags = parse_tags(text)
+            if not tags:
+                raise RuntimeError(f"No tags parsed from response: {text!r}")
+            return tags
+        except JoyCaptionError:
+            raise
+        except Exception as e:
+            raise JoyCaptionError(
+                f"{self.display_name} inference failed: {type(e).__name__}: {e}\n\n"
+                f"{self.diagnostics()}"
+            ) from e
+
+
+def create_image_tagger(
+    profile_id: str,
+    status_callback=None,
+    progress_callback=None,
+):
+    profile = TAGGER_PROFILES.get(profile_id, TAGGER_PROFILES["joycaption"])
+    if profile.backend == "smolvlm":
+        return SmolVLMTagger(profile, status_callback, progress_callback)
+    return JoyCaption4Bit(
+        model_id=profile.repo_id,
+        status_callback=status_callback,
+        progress_callback=progress_callback,
+        display_name=profile.label,
+        fallback_total_bytes=MODEL_FALLBACK_TOTAL_BYTES,
+    )

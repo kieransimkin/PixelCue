@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pixelcue"
-version = "0.3.1"
-description = "AI-assisted visual media scanner and tag browser with 4-bit JoyCaption caption tagging."
+version = "0.8.5"
+description = "Local visual-media keyword service and desktop tag browser with selectable VLMs."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = {text = "MIT"}
 dependencies = [
+  "fastapi>=0.115,<1",
+  "python-socketio>=5.12,<6",
+  "uvicorn>=0.34,<1",
   "PySide6>=6.7",
   "Pillow>=10.4",
   "torch>=2.14.1",
@@ -18,6 +21,7 @@ dependencies = [
   "bitsandbytes>=0.45",
   "huggingface-hub>=0.30",
   "platformdirs>=4.2",
+  "thumbmoves>=0.1.0",
   "av>=12",
   "python-magic>=0.4.27; platform_system != 'Windows'",
   "python-magic-bin>=0.4.14; platform_system == 'Windows'",
@@ -30,17 +34,20 @@ faces = [
   "deepface>=0.0.95",
   "tensorflow==2.21.0",
   "tf-keras==2.21.0",
+  "retina-face>=0.0.14",
+  "mtcnn>=0.1.0",
 ]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx2>=2,<3", "python-socketio[client]>=5.12,<6"]
 
 [project.scripts]
 pixelcue = "pixelcue.main:main"
+pixelcue-server = "pixelcue.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx2>=2,<3", "python-socketio[client]>=5.12,<6"]
 
 [[tool.uv.index]]
 name = "pytorch-cu132"
@@ -49,3 +56,8 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu132" }
+"thumbmoves" = { path = "packages/thumbmoves" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "packages/thumbmoves/tests"]
+addopts = "--import-mode=importlib"

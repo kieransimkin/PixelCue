@@ -4,16 +4,19 @@ import math
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, QUrl, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, QUrl, Signal, QTimer
 from PySide6.QtGui import QDesktopServices, QFont, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QCompleter,
     QFileDialog,
     QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QLayout,
     QMainWindow,
     QMessageBox,
@@ -28,6 +31,13 @@ from PySide6.QtWidgets import (
 )
 
 from .scanner import ScanWorker, export_tsv
+from .model import available_tagger_profiles, DEFAULT_TAGGER_PROFILE
+
+
+TAG_CLOUD_PAGE_SIZE = 100
+FACE_CLUSTER_PAGE_SIZE = 100
+TAG_CLOUD_REFRESH_MS = 150
+GALLERY_PAGE_SIZE = 100
 
 
 class FlowLayout(QLayout):
@@ -40,6 +50,19 @@ class FlowLayout(QLayout):
 
     def addItem(self, item):
         self._items.append(item)
+
+    def setWidgetOrder(self, widgets):
+        """Reorder existing layout items without destroying their widgets."""
+        order = {id(widget): index for index, widget in enumerate(widgets)}
+        fallback = len(order) + len(self._items)
+        self._items.sort(
+            key=lambda item: order.get(id(item.widget()), fallback)
+        )
+        self.invalidate()
+        parent = self.parentWidget()
+        if parent is not None:
+            parent.updateGeometry()
+            parent.update()
 
     def count(self):
         return len(self._items)
@@ -114,55 +137,301 @@ class ThumbButton(QPushButton):
 
 
 class TagItemsWindow(QWidget):
-    def __init__(self, tag: str, paths: list[str], thumbs: dict[str, QPixmap], parent=None):
-        # Deliberately create a true top-level window. Keeping a Python reference
-        # in MainWindow controls lifetime; Qt parentage must not turn this into a
-        # child/tool-style popup.
+    """Top-level thumbnail gallery with cumulative AND tag filters."""
+
+    def __init__(
+        self,
+        tag: str,
+        paths: list[str],
+        thumbs: dict[str, QPixmap],
+        path_tags: dict[str, set[str]] | None = None,
+        parent=None,
+        required_tags: list[str] | None = None,
+    ):
+        # True independent OS window.
         super().__init__(None, Qt.Window)
-        self.setWindowTitle(f"{tag} — {len(paths)} item(s)")
-        self.resize(900, 650)
+        self.base_title = str(tag)
+        self.all_paths = list(paths)
+        self.thumbs = thumbs
+        self.path_tags = path_tags or {}
+        self.locked_tags = list(required_tags if required_tags is not None else [tag])
+        self.required_tags = list(self.locked_tags)
+        self.preview_query = ""
+        self.render_limit = GALLERY_PAGE_SIZE
+        self.filtered_paths: list[str] = []
+        self.thumb_widgets: list[ThumbButton] = []
 
+        self.available_tags = self._available_tags()
+        self._tag_by_casefold = {
+            candidate.casefold(): candidate
+            for candidate in self.available_tags
+        }
+
+        self.resize(920, 680)
         outer = QVBoxLayout(self)
-        title = QLabel(f"<b>{tag}</b> — {len(paths)} item(s)")
-        outer.addWidget(title)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        host = QWidget()
-        grid = QGridLayout(host)
-        grid.setAlignment(Qt.AlignTop)
+        self.title_label = QLabel()
+        outer.addWidget(self.title_label)
 
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Add required tag:"))
+        self.tag_filter = QLineEdit()
+        self.tag_filter.setPlaceholderText("e.g. clear water")
+        self.tag_filter.setClearButtonEnabled(True)
+
+        completer = QCompleter(self.available_tags, self.tag_filter)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        self.tag_filter.setCompleter(completer)
+
+        self.add_filter_btn = QPushButton("Add")
+        self.clear_filter_btn = QPushButton("Clear added filters")
+        filter_row.addWidget(self.tag_filter, 1)
+        filter_row.addWidget(self.add_filter_btn)
+        filter_row.addWidget(self.clear_filter_btn)
+        outer.addLayout(filter_row)
+
+        self.active_filter_label = QLabel()
+        self.active_filter_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        outer.addWidget(self.active_filter_label)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.host = QWidget()
+        self.grid = QGridLayout(self.host)
+        self.grid.setAlignment(Qt.AlignTop)
+        self.scroll.setWidget(self.host)
+        outer.addWidget(self.scroll, 1)
+
+        self.tag_filter.textChanged.connect(self._on_preview_changed)
+        self.tag_filter.returnPressed.connect(self.commit_filter)
+        self.add_filter_btn.clicked.connect(self.commit_filter)
+        self.clear_filter_btn.clicked.connect(self.clear_added_filters)
+        self.scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
+
+        self.apply_filters()
+
+    def _available_tags(self) -> list[str]:
+        counts = Counter()
+        for path in self.all_paths:
+            for tag in self.path_tags.get(path, set()):
+                counts[str(tag)] += 1
+        return [tag for tag, _count in counts.most_common()]
+
+    @staticmethod
+    def _tags_casefold(tags: set[str] | list[str]) -> set[str]:
+        return {str(tag).casefold() for tag in tags}
+
+    def _path_matches(self, path: str) -> bool:
+        tags = self._tags_casefold(self.path_tags.get(path, set()))
+
+        # Every committed requirement must be present exactly.
+        for required in self.required_tags:
+            if required.casefold() not in tags:
+                return False
+
+        # While typing, preview an additional requirement. Exact tag matches
+        # behave exactly; otherwise substring-match against the image's tags.
+        query = self.preview_query.casefold().strip()
+        if query:
+            canonical = self._tag_by_casefold.get(query)
+            if canonical is not None:
+                if canonical.casefold() not in tags:
+                    return False
+            elif not any(query in tag for tag in tags):
+                return False
+
+        return True
+
+    def _canonical_filter_from_input(self, text: str) -> str | None:
+        query = text.casefold().strip()
+        if not query:
+            return None
+
+        exact = self._tag_by_casefold.get(query)
+        if exact is not None:
+            return exact
+
+        matches = [
+            tag for tag in self.available_tags
+            if query in tag.casefold()
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def _on_preview_changed(self, text: str) -> None:
+        self.preview_query = str(text)
+        self.render_limit = GALLERY_PAGE_SIZE
+        self.scroll.verticalScrollBar().setValue(0)
+        self.apply_filters()
+
+    def commit_filter(self) -> None:
+        canonical = self._canonical_filter_from_input(self.tag_filter.text())
+        if canonical is None:
+            # Keep the live preview in place if the query is ambiguous.
+            return
+
+        if canonical.casefold() not in {
+            tag.casefold() for tag in self.required_tags
+        }:
+            self.required_tags.append(canonical)
+
+        self.preview_query = ""
+        self.tag_filter.clear()
+        self.render_limit = GALLERY_PAGE_SIZE
+        self.scroll.verticalScrollBar().setValue(0)
+        self.apply_filters()
+
+    def clear_added_filters(self) -> None:
+        self.required_tags = list(self.locked_tags)
+        self.preview_query = ""
+        self.tag_filter.clear()
+        self.render_limit = GALLERY_PAGE_SIZE
+        self.scroll.verticalScrollBar().setValue(0)
+        self.apply_filters()
+
+    def _on_scroll(self, value: int) -> None:
+        bar = self.scroll.verticalScrollBar()
+        if bar.maximum() <= 0:
+            return
+        if value >= bar.maximum() - max(80, bar.pageStep() // 3):
+            if self.render_limit < len(self.filtered_paths):
+                self.render_limit += GALLERY_PAGE_SIZE
+                self._render_page()
+
+    def apply_filters(self) -> None:
+        self.filtered_paths = [
+            path for path in self.all_paths
+            if self._path_matches(path)
+        ]
+        self._update_header()
+        self._render_page()
+
+    def _update_header(self) -> None:
+        count = len(self.filtered_paths)
+        self.setWindowTitle(f"{self.base_title} — {count} item(s)")
+        self.title_label.setText(
+            f"<b>{self.base_title}</b> — {count} of {len(self.all_paths)} item(s)"
+        )
+
+        committed = " AND ".join(self.required_tags) if self.required_tags else "(none)"
+        preview = self.preview_query.strip()
+        if preview:
+            self.active_filter_label.setText(
+                f"Required tags: {committed} AND <i>{preview}</i> (preview)"
+            )
+        else:
+            self.active_filter_label.setText(
+                f"Required tags: {committed}"
+            )
+
+    def _clear_rendered_thumbs(self) -> None:
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.thumb_widgets.clear()
+
+    def _render_page(self) -> None:
+        self._clear_rendered_thumbs()
+
+        visible = self.filtered_paths[: self.render_limit]
         cols = 4
-        for i, path in enumerate(paths):
-            grid.addWidget(ThumbButton(path, thumbs.get(path)), i // cols, i % cols)
+        for i, path in enumerate(visible):
+            button = ThumbButton(path, self.thumbs.get(path))
+            self.thumb_widgets.append(button)
+            self.grid.addWidget(button, i // cols, i % cols)
 
-        scroll.setWidget(host)
-        outer.addWidget(scroll)
+        if not visible:
+            message = QLabel("No images match all required tags.")
+            self.grid.addWidget(message, 0, 0, 1, cols)
+
+        self.host.updateGeometry()
 
 
 class FaceClusterButton(QPushButton):
     def __init__(self, cluster: dict, pixmap: QPixmap | None, callback, parent=None):
         super().__init__(parent)
-        self.cluster = cluster
-        count = int(cluster.get("size", len(cluster.get("paths", []))))
-        self.setText(f"Person cluster {cluster.get('cluster_id', '?')}  ({count})")
-        self.setToolTip(
-            f"{count} image(s)\nRepresentative: {cluster.get('representative_path', '')}"
-        )
-        self.setFixedSize(190, 175)
+        self._callback = callback
+        self.cluster: dict = {}
+        self.setFixedSize(210, 180)
         self.setIconSize(QSize(150, 112))
+        self.clicked.connect(lambda: self._callback(self.cluster))
+        self.update_cluster(cluster, pixmap)
+
+    def update_cluster(self, cluster: dict, pixmap: QPixmap | None = None) -> None:
+        self.cluster = dict(cluster)
+        count = int(cluster.get("size", len(cluster.get("paths", []))))
+        cluster_id = cluster.get("cluster_id", "?")
+        self.setText(f"Person cluster {cluster_id} — {count} images")
+
+        summary = cluster.get("summary") or {}
+        details = [
+            f"Image count: {count}",
+            f"Representative: {cluster.get('representative_path', '')}",
+        ]
+        if summary:
+            if summary.get("age") is not None:
+                details.append(f"Age: {summary.get('age')}")
+            if summary.get("dominant_gender"):
+                details.append(f"Gender: {summary.get('dominant_gender')}")
+            if summary.get("dominant_ethnicity"):
+                details.append(f"Ethnicity: {summary.get('dominant_ethnicity')}")
+            if summary.get("dominant_emotion"):
+                details.append(f"Emotion: {summary.get('dominant_emotion')}")
+            if summary.get("celebrity_lookalike"):
+                details.append(f"Look-alike: {summary.get('celebrity_lookalike')}")
+            details.append(f"Attribute samples: {summary.get('samples_analyzed', 0)}")
+        self.setToolTip("\n".join(details))
+
         if pixmap and not pixmap.isNull():
             from PySide6.QtGui import QIcon
             self.setIcon(QIcon(pixmap))
-        self.clicked.connect(lambda: callback(cluster))
+
 
 
 class FaceClusterWindow(TagItemsWindow):
-    def __init__(self, cluster: dict, thumbs: dict[str, QPixmap], parent=None):
+    def __init__(
+        self,
+        cluster: dict,
+        thumbs: dict[str, QPixmap],
+        path_tags: dict[str, set[str]],
+        parent=None,
+    ):
         cluster_id = cluster.get("cluster_id", "?")
         paths = list(cluster.get("paths", []))
-        super().__init__(f"Person cluster {cluster_id}", paths, thumbs, None)
+        super().__init__(
+            f"Person cluster {cluster_id}",
+            paths,
+            thumbs,
+            path_tags,
+            None,
+            required_tags=[],
+        )
 
+        summary = cluster.get("summary") or {}
+        if summary:
+            bits = []
+            if summary.get("age") is not None:
+                bits.append(f"Age ≈ {summary.get('age')}")
+            if summary.get("dominant_gender"):
+                bits.append(f"Gender: {summary.get('dominant_gender')}")
+            if summary.get("dominant_ethnicity"):
+                bits.append(f"Ethnicity: {summary.get('dominant_ethnicity')}")
+            if summary.get("dominant_emotion"):
+                bits.append(f"Emotion: {summary.get('dominant_emotion')}")
+            if summary.get("celebrity_lookalike"):
+                bits.append(f"Look-alike: {summary.get('celebrity_lookalike')}")
+            bits.append(
+                f"Samples analysed: {summary.get('samples_analyzed', 0)}"
+            )
+            bits.append(
+                "Early-stop confidence: "
+                + ("yes" if summary.get("confidence_sufficient") else "no")
+            )
+            self.layout().insertWidget(1, QLabel(" • ".join(bits)))
 
 
 class ErrorLogDialog(QDialog):
@@ -182,19 +451,32 @@ class ErrorLogDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, startup_path: str | None = None):
+    def __init__(
+        self,
+        startup_path: str | None = None,
+        startup_model_profile: str | None = None,
+    ):
         super().__init__()
         self.setWindowTitle("PixelCue")
         self.resize(1100, 760)
 
         self.worker: ScanWorker | None = None
         self.tag_to_paths: dict[str, list[str]] = defaultdict(list)
+        self.path_tags: dict[str, set[str]] = defaultdict(set)
         self.tag_counts = Counter()
         self.thumbs: dict[str, QPixmap] = {}
         self.records = {}
         self.tag_windows: list[TagItemsWindow] = []
         self.face_cluster_windows: list[FaceClusterWindow] = []
         self.face_clusters: list[dict] = []
+        self.tag_buttons: dict[str, QPushButton] = {}
+        self.face_cluster_buttons: dict[str, FaceClusterButton] = {}
+        self.tag_render_limit = TAG_CLOUD_PAGE_SIZE
+        self.tag_filter_text = ""
+        self.face_cluster_render_limit = FACE_CLUSTER_PAGE_SIZE
+        self._tag_refresh_pending = False
+        self._tag_placeholder: QLabel | None = None
+        self._face_placeholder: QLabel | None = None
         self.error_count = 0
         self.error_log = ErrorLogDialog(self)
         self._first_error_shown = False
@@ -211,11 +493,27 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.error_btn = QPushButton("Errors: 0")
         self.error_btn.setEnabled(False)
+        self.model_combo = QComboBox()
+        profiles = available_tagger_profiles()
+        selected_profile = startup_model_profile or DEFAULT_TAGGER_PROFILE
+        for profile in profiles:
+            self.model_combo.addItem(profile.label, profile.id)
+            index = self.model_combo.count() - 1
+            self.model_combo.setItemData(
+                index,
+                f"{profile.description}  Parameters: {profile.approximate_parameters}",
+                Qt.ToolTipRole,
+            )
+            if profile.id == selected_profile:
+                self.model_combo.setCurrentIndex(index)
+        self.active_model_label = self.model_combo.currentText()
         self.path_label = QLabel(startup_path or "No start path selected")
         self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         top.addWidget(self.choose_btn)
         top.addWidget(self.stop_btn)
         top.addWidget(self.error_btn)
+        top.addWidget(QLabel("Tagger:"))
+        top.addWidget(self.model_combo)
         top.addWidget(self.path_label, 1)
         layout.addLayout(top)
 
@@ -232,18 +530,36 @@ class MainWindow(QMainWindow):
         self.info = QLabel("Choose a folder to begin. Hidden folders are included." if not startup_path else f"Ready to scan: {startup_path}")
         layout.addWidget(self.info)
 
-        tags_title = QLabel("<b>JoyCaption tags</b>")
-        layout.addWidget(tags_title)
+        tags_header = QHBoxLayout()
+        tags_title = QLabel("<b>VLM tags</b>")
+        self.tag_filter = QLineEdit()
+        self.tag_filter.setPlaceholderText("Filter tags…")
+        self.tag_filter.setClearButtonEnabled(True)
+        self.tag_filter.setMaximumWidth(320)
+        self.tag_count_label = QLabel("0 tags")
+        tags_header.addWidget(tags_title)
+        tags_header.addStretch(1)
+        tags_header.addWidget(QLabel("Search:"))
+        tags_header.addWidget(self.tag_filter)
+        tags_header.addWidget(self.tag_count_label)
+        layout.addLayout(tags_header)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.cloud_host = QWidget()
         self.cloud = FlowLayout(self.cloud_host)
         self.scroll.setWidget(self.cloud_host)
+        self.scroll.verticalScrollBar().valueChanged.connect(self._on_tag_scroll)
+        self.tag_filter.textChanged.connect(self.on_tag_filter_changed)
         layout.addWidget(self.scroll, 2)
 
+        faces_header = QHBoxLayout()
         faces_title = QLabel("<b>Face identity clusters</b>")
-        layout.addWidget(faces_title)
+        self.face_cluster_count_label = QLabel("0 clusters")
+        faces_header.addWidget(faces_title)
+        faces_header.addStretch(1)
+        faces_header.addWidget(self.face_cluster_count_label)
+        layout.addLayout(faces_header)
 
         self.face_scroll = QScrollArea()
         self.face_scroll.setWidgetResizable(True)
@@ -251,6 +567,9 @@ class MainWindow(QMainWindow):
         self.face_cluster_host = QWidget()
         self.face_cluster_layout = FlowLayout(self.face_cluster_host)
         self.face_scroll.setWidget(self.face_cluster_host)
+        self.face_scroll.verticalScrollBar().valueChanged.connect(
+            self._on_face_cluster_scroll
+        )
         layout.addWidget(self.face_scroll, 1)
         self.rebuild_face_clusters()
 
@@ -279,10 +598,16 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             return
         self.tag_to_paths.clear()
+        self.path_tags.clear()
         self.tag_counts.clear()
+        self.tag_filter.clear()
+        self.tag_filter_text = ""
         self.thumbs.clear()
         self.records.clear()
         self.face_clusters.clear()
+        self.tag_render_limit = TAG_CLOUD_PAGE_SIZE
+        self.face_cluster_render_limit = FACE_CLUSTER_PAGE_SIZE
+        self._tag_refresh_pending = False
         self.error_count = 0
         self._first_error_shown = False
         self.error_btn.setText("Errors: 0")
@@ -302,7 +627,10 @@ class MainWindow(QMainWindow):
         self.path_label.setText(folder)
         self.choose_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self.worker = ScanWorker(folder, self)
+        self.model_combo.setEnabled(False)
+        profile_id = str(self.model_combo.currentData() or "joycaption")
+        self.active_model_label = self.model_combo.currentText()
+        self.worker = ScanWorker(folder, model_profile_id=profile_id, parent=self)
         self.worker.status.connect(self.status.showMessage)
         self.worker.current_path.connect(lambda p: self.info.setText(f"Processing: {p}"))
         self.worker.media_queue_count.connect(self.on_media_queue_count)
@@ -311,7 +639,6 @@ class MainWindow(QMainWindow):
         self.worker.face_clusters_updated.connect(self.on_face_clusters_updated)
         self.worker.discovered_count.connect(lambda n: self.count_label.setText(f"{n} files discovered"))
         self.worker.tagged.connect(self.on_tagged)
-        self.worker.record_updated.connect(self.on_record)
         self.worker.symlink_question.connect(self.ask_symlink)
         self.worker.model_status.connect(self.on_model_status)
         self.worker.model_progress.connect(self.on_model_progress)
@@ -342,34 +669,93 @@ class MainWindow(QMainWindow):
 
     def on_face_clusters_updated(self, clusters_obj: object):
         self.face_clusters = list(clusters_obj or [])
-        self.rebuild_face_clusters()
+        self.face_cluster_count_label.setText(
+            f"{len(self.face_clusters)} clusters"
+        )
+        self.sync_face_clusters()
 
     def rebuild_face_clusters(self):
+        """Clear the face pane once; subsequent updates are incremental."""
         while self.face_cluster_layout.count():
             item = self.face_cluster_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        self.face_cluster_buttons.clear()
+        self._face_placeholder = QLabel(
+            "Face clusters will appear as DeepFace embeddings are analysed."
+        )
+        self.face_cluster_layout.addWidget(self._face_placeholder)
 
-        if not self.face_clusters:
-            self.face_cluster_layout.addWidget(
-                QLabel("Face clusters will appear as DeepFace embeddings are analysed.")
-            )
+    def _on_face_cluster_scroll(self, value: int) -> None:
+        bar = self.face_scroll.verticalScrollBar()
+        if bar.maximum() <= 0:
             return
+        if value >= bar.maximum() - max(80, bar.pageStep() // 3):
+            if self.face_cluster_render_limit < len(self.face_clusters):
+                self.face_cluster_render_limit += FACE_CLUSTER_PAGE_SIZE
+                self.sync_face_clusters()
 
-        for cluster in self.face_clusters:
+    def sync_face_clusters(self):
+        visible_clusters = self.face_clusters[: self.face_cluster_render_limit]
+        if visible_clusters and self._face_placeholder is not None:
+            self._face_placeholder.setParent(None)
+            self._face_placeholder.deleteLater()
+            self._face_placeholder = None
+
+        incoming_keys: set[str] = set()
+        ordered_buttons = []
+        for cluster in visible_clusters:
             representative = str(cluster.get("representative_path", ""))
-            btn = FaceClusterButton(
-                cluster,
-                self.thumbs.get(representative),
-                self.open_face_cluster,
+            if not representative:
+                continue
+            incoming_keys.add(representative)
+            pixmap = self.thumbs.get(representative)
+            button = self.face_cluster_buttons.get(representative)
+            if button is None:
+                button = FaceClusterButton(
+                    cluster, pixmap, self.open_face_cluster
+                )
+                self.face_cluster_buttons[representative] = button
+                self.face_cluster_layout.addWidget(button)
+            else:
+                button.update_cluster(cluster, pixmap)
+            ordered_buttons.append(button)
+
+        stale = set(self.face_cluster_buttons) - incoming_keys
+        for key in stale:
+            button = self.face_cluster_buttons.pop(key)
+            button.setParent(None)
+            button.deleteLater()
+
+        if ordered_buttons:
+            self.face_cluster_layout.setWidgetOrder(ordered_buttons)
+
+        if not visible_clusters and self._face_placeholder is None:
+            self._face_placeholder = QLabel(
+                "Face clusters will appear as DeepFace embeddings are analysed."
             )
-            self.face_cluster_layout.addWidget(btn)
+            self.face_cluster_layout.addWidget(self._face_placeholder)
         self.face_cluster_host.updateGeometry()
 
+    @staticmethod
+    def _remove_window_by_id(collection: list, target_id: int) -> None:
+        """Forget a destroyed top-level window without touching its Qt object."""
+        collection[:] = [candidate for candidate in collection if id(candidate) != target_id]
+
+    def _track_top_level_window(self, collection: list, win: QWidget) -> None:
+        """Keep a gallery alive, then remove it safely when Qt destroys it."""
+        collection.append(win)
+        target_id = id(win)
+        win.destroyed.connect(
+            lambda _obj=None, items=collection, ident=target_id: self._remove_window_by_id(
+                items, ident
+            )
+        )
+
     def open_face_cluster(self, cluster: dict):
-        win = FaceClusterWindow(cluster, self.thumbs, None)
+        win = FaceClusterWindow(cluster, self.thumbs, self.path_tags, None)
         win.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.face_cluster_windows.append(win)
+        self._track_top_level_window(self.face_cluster_windows, win)
         win.show()
 
     def on_record(self, path: str, rec: object):
@@ -383,47 +769,173 @@ class MainWindow(QMainWindow):
             if not pm.isNull():
                 self.thumbs[path] = pm
 
+        self.path_tags[path].update(str(tag) for tag in tags)
+
         for tag in tags:
             if path not in self.tag_to_paths[tag]:
                 self.tag_to_paths[tag].append(path)
                 self.tag_counts[tag] += 1
-        self.rebuild_cloud()
+        # Let the coalesced cloud refresh update the count label as well.
+        # Writing the unfiltered total here would momentarily overwrite an
+        # active search result count while cached/tagging events stream in.
+        self.schedule_tag_cloud_sync()
+
+    def _current_tag_filter_query(self) -> str:
+        """Read the live widget value so queued refreshes cannot use stale state."""
+        return self.tag_filter.text().casefold().strip()
+
+    def _filtered_ranked_tags(self, query: str | None = None) -> list[str]:
+        if query is None:
+            query = self._current_tag_filter_query()
+        ranked = [tag for tag, _count in self.tag_counts.most_common()]
+        if not query:
+            return ranked
+        return [tag for tag in ranked if query in tag.casefold()]
+
+    def on_tag_filter_changed(self, text: str) -> None:
+        """Apply search immediately; background tag updates stay throttled."""
+        self.tag_filter_text = str(text)
+        self.tag_render_limit = TAG_CLOUD_PAGE_SIZE
+        self.scroll.verticalScrollBar().setValue(0)
+
+        # Search is user-interactive and must never wait behind a pending
+        # coalesced refresh generated by cached/new tagging results. Mark any
+        # pending refresh as satisfied and synchronously render the current
+        # widget text. A previously queued singleShot may still run later, but
+        # sync_tag_cloud() always re-reads the live QLineEdit value.
+        self._tag_refresh_pending = False
+        self.sync_tag_cloud()
 
     def rebuild_cloud(self):
+        """Reset the lazy tag cloud to its first page."""
         while self.cloud.count():
             item = self.cloud.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        self.tag_buttons.clear()
+        self.tag_render_limit = TAG_CLOUD_PAGE_SIZE
+        self._tag_refresh_pending = False
+        self.tag_count_label.setText(f"{len(self.tag_counts)} tags")
+        self._tag_placeholder = QLabel(
+            "Tags will appear here as the selected VLM processes media."
+        )
+        self.cloud.addWidget(self._tag_placeholder)
 
-        if not self.tag_counts:
-            label = QLabel("Tags will appear here as JoyCaption processes media.")
-            self.cloud.addWidget(label)
+    def schedule_tag_cloud_sync(self, *, immediate: bool = False) -> None:
+        """Coalesce many tag updates into one bounded GUI refresh."""
+        if self._tag_refresh_pending:
             return
+        self._tag_refresh_pending = True
+        QTimer.singleShot(
+            0 if immediate else TAG_CLOUD_REFRESH_MS,
+            self.sync_tag_cloud,
+        )
 
-        max_count = max(self.tag_counts.values())
-        for tag, count in self.tag_counts.most_common():
-            btn = QPushButton(f"{tag}  {count}")
-            # Log-ish scaling keeps a dominant tag from making everything else tiny.
-            ratio = math.log1p(count) / math.log1p(max_count) if max_count else 1.0
-            font = btn.font()
-            font.setPointSizeF(9.0 + ratio * 13.0)
-            btn.setFont(font)
-            btn.setFlat(True)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setToolTip(f"Show {count} item(s) tagged {tag}")
-            btn.clicked.connect(lambda _checked=False, t=tag: self.open_tag(t))
-            self.cloud.addWidget(btn)
+    def _on_tag_scroll(self, value: int) -> None:
+        bar = self.scroll.verticalScrollBar()
+        if bar.maximum() <= 0:
+            return
+        if value >= bar.maximum() - max(80, bar.pageStep() // 3):
+            matched_count = len(self._filtered_ranked_tags())
+            if self.tag_render_limit < matched_count:
+                self.tag_render_limit += TAG_CLOUD_PAGE_SIZE
+                self.schedule_tag_cloud_sync(immediate=True)
+
+    def sync_tag_cloud(self) -> None:
+        """Render only the highest-ranked visible page of matching tags."""
+        self._tag_refresh_pending = False
+        query = self._current_tag_filter_query()
+        query_text = self.tag_filter.text().strip()
+        ranked = self._filtered_ranked_tags(query)
+        visible_tags = ranked[: self.tag_render_limit]
+
+        if visible_tags and self._tag_placeholder is not None:
+            self._tag_placeholder.setParent(None)
+            self._tag_placeholder.deleteLater()
+            self._tag_placeholder = None
+
+        visible_set = set(visible_tags)
+        ordered_buttons = []
+        for tag in visible_tags:
+            count = int(self.tag_counts.get(tag, 0))
+            button = self.tag_buttons.get(tag)
+            if button is None:
+                button = QPushButton()
+                button.setFlat(True)
+                button.setCursor(Qt.PointingHandCursor)
+                button.clicked.connect(
+                    lambda _checked=False, t=tag: self.open_tag(t)
+                )
+                self.tag_buttons[tag] = button
+                self.cloud.addWidget(button)
+
+            button.setText(f"{tag}  {count}")
+            button.setToolTip(f"Show {count} item(s) tagged {tag}")
+            font = button.font()
+            font.setPointSizeF(
+                9.0 + min(13.0, math.log2(count + 1) * 2.2)
+            )
+            button.setFont(font)
+            ordered_buttons.append(button)
+
+        # Crucially, tags outside the currently materialised page have no Qt
+        # widgets at all. They stay only in Counter/dicts until scrolling asks
+        # for the next page.
+        stale = set(self.tag_buttons) - visible_set
+        for tag in stale:
+            button = self.tag_buttons.pop(tag)
+            button.setParent(None)
+            button.deleteLater()
+
+        if ordered_buttons:
+            self.cloud.setWidgetOrder(ordered_buttons)
+
+        if not visible_tags and self._tag_placeholder is None:
+            if query:
+                placeholder_text = (
+                    f"No tags match “{query_text}”."
+                )
+            else:
+                placeholder_text = (
+                    "Tags will appear here as the selected VLM processes media."
+                )
+            self._tag_placeholder = QLabel(placeholder_text)
+            self.cloud.addWidget(self._tag_placeholder)
+        elif not visible_tags and self._tag_placeholder is not None:
+            if query:
+                self._tag_placeholder.setText(
+                    f"No tags match “{query_text}”."
+                )
+            else:
+                self._tag_placeholder.setText(
+                    "Tags will appear here as the selected VLM processes media."
+                )
+
+        shown = len(visible_tags)
+        matched = len(ranked)
+        total = len(self.tag_counts)
+        if query:
+            self.tag_count_label.setText(
+                f"{matched} of {total} tags — showing {shown}"
+            )
+        else:
+            self.tag_count_label.setText(
+                f"{total} tags — showing {shown}" if total else "0 tags"
+            )
         self.cloud_host.updateGeometry()
 
     def open_tag(self, tag: str):
-        win = TagItemsWindow(tag, list(self.tag_to_paths.get(tag, [])), self.thumbs, None)
+        win = TagItemsWindow(
+            tag,
+            list(self.tag_to_paths.get(tag, [])),
+            self.thumbs,
+            self.path_tags,
+            None,
+            required_tags=[tag],
+        )
         win.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.tag_windows.append(win)
-        win.destroyed.connect(lambda: self._prune_windows())
+        self._track_top_level_window(self.tag_windows, win)
         win.show()
-
-    def _prune_windows(self):
-        self.tag_windows = [w for w in self.tag_windows if w is not None and not w.isHidden()]
 
     def ask_symlink(self, path: str, target: str):
         box = QMessageBox(self)
@@ -475,7 +987,7 @@ class MainWindow(QMainWindow):
         if any(word in low for word in ("querying", "checking", "starting", "loading", "verifying")):
             self.model_progress.setRange(0, 0)
             self.model_progress.show()
-        elif any(word in low for word in ("complete", "cached", "ready", "failed")):
+        elif any(word in low for word in ("complete", "cached", "ready", "failed", "deferred")):
             self.model_progress.hide()
 
     def on_model_progress(self, done_obj: object, total_obj: object):
@@ -487,7 +999,7 @@ class MainWindow(QMainWindow):
             self.model_progress.setRange(0, 0)
             self.model_progress.show()
             self.model_label.setText(
-                f"Model: JoyCaption 4-bit downloading — {done:,} bytes received"
+                f"Model: {self.active_model_label} downloading — {done:,} bytes received"
             )
             return
 
@@ -501,7 +1013,7 @@ class MainWindow(QMainWindow):
 
         approx = "" if self.model_total_is_exact else "≈"
         self.model_label.setText(
-            "Model: JoyCaption 4-bit downloading — "
+            f"Model: {self.active_model_label} downloading — "
             f"{done:,} / {approx}{total:,} bytes "
             f"({self._human_bytes(done)} / {approx}{self._human_bytes(total)}, "
             f"{percentage:.1f}%)"
@@ -537,6 +1049,7 @@ class MainWindow(QMainWindow):
         records = list(records_obj or [])
         self.choose_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.model_combo.setEnabled(True)
         self.info.setText(f"Scan complete: {len(records)} filesystem file entries recorded.")
         self.status.showMessage("Scan complete")
 

@@ -16,14 +16,15 @@ def test_faceidentity_queues_deepface_only_for_images():
     image_segment = ast.get_source_segment(source, image_fn)
     video_segment = ast.get_source_segment(source, video_fn)
     assert "faceidentity" in image_segment.casefold()
-    assert "_queue_face_analysis(path)" in image_segment
-    assert "_queue_face_analysis(path)" not in video_segment
+    assert "_restore_or_queue_face_analysis(path, rec)" in image_segment
+    assert "_restore_or_queue_face_analysis(path, rec)" not in video_segment
 
 
 def test_face_worker_is_independent_thread():
     source = (ROOT / "src" / "pixelcue" / "scanner.py").read_text(encoding="utf-8")
     assert 'name="pixelcue-deepface"' in source
-    assert "target=self._face_worker" in source
+    assert "deepface-worker" in source
+    assert "self._run_logged_worker" in source
     assert "CLUSTER_INTERVAL_SECONDS" in source
 
 
@@ -48,12 +49,10 @@ def test_representative_is_nearest_centroid():
     assert distances[rep] == min(distances.values())
 
 
-def test_face_metadata_includes_embedding_and_demographics():
+def test_face_metadata_extracts_embedding_during_scan():
     scanner = (ROOT / "src" / "pixelcue" / "scanner.py").read_text(encoding="utf-8")
-    face = (ROOT / "src" / "pixelcue" / "face.py").read_text(encoding="utf-8")
     assert 'rec["extra_metadata"]["face_embedding"] = result.embedding' in scanner
-    for field in ["age", "dominant_gender", "dominant_race", "dominant_ethnicity", "dominant_emotion"]:
-        assert f'"{field}"' in face
+    assert "result = analyzer.extract_embedding(path)" in scanner
 
 
 def test_celebrity_lookup_is_optional_database_backed():

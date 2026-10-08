@@ -19,15 +19,16 @@ TAG = re.compile(
 )
 
 
-def source_version(package_root: Path = PACKAGE_ROOT) -> str:
+def source_version(package_root: Path = PACKAGE_ROOT, *, distribution: str = "thumbmoves",
+                   module: str = "thumbmoves", tag_pattern: re.Pattern = TAG) -> str:
     project = tomllib.loads(
         (package_root / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]
-    if project["name"] != "thumbmoves":
-        raise ValueError("Distribution name must remain thumbmoves.")
+    if project["name"] != distribution:
+        raise ValueError(f"Distribution name must remain {distribution}.")
 
     tree = ast.parse(
-        (package_root / "src" / "thumbmoves" / "__init__.py").read_text(
+        (package_root / "src" / module / "__init__.py").read_text(
             encoding="utf-8"
         )
     )
@@ -41,8 +42,9 @@ def source_version(package_root: Path = PACKAGE_ROOT) -> str:
         )
     ]
     if versions != [project["version"]]:
-        raise ValueError("pyproject.toml and thumbmoves.__version__ disagree.")
-    if not TAG.fullmatch("thumbmoves-v" + project["version"]):
+        raise ValueError(f"pyproject.toml and {module}.__version__ disagree.")
+    prefix = "thumbmoves-v" if distribution == "thumbmoves" else "v"
+    if not tag_pattern.fullmatch(prefix + project["version"]):
         raise ValueError(
             "Use a canonical X.Y.Z version, optionally with a/b/rc, .dev or .post suffix."
         )
@@ -90,15 +92,20 @@ def release_metadata(
     return result
 
 
-def validate_dist(directory: Path, package_root: Path = PACKAGE_ROOT) -> list[Path]:
-    version = source_version(package_root)
+def validate_dist(directory: Path, package_root: Path = PACKAGE_ROOT, *,
+                  distribution: str = "thumbmoves", module: str = "thumbmoves",
+                  tag_pattern: re.Pattern = TAG,
+                  required_modules: set[str] | None = None,
+                  extra_sdist: set[str] | None = None) -> list[Path]:
+    version = source_version(package_root, distribution=distribution, module=module,
+                             tag_pattern=tag_pattern)
     wheels = sorted(directory.glob("*.whl"))
     sdists = sorted(directory.glob("*.tar.gz"))
     if len(wheels) != 1 or len(sdists) != 1:
-        raise ValueError("Expected exactly one ThumbMoves wheel and one source distribution.")
+        raise ValueError(f"Expected exactly one {distribution} wheel and one source distribution.")
 
-    expected = {"Name": "thumbmoves", "Version": version}
-    required_wheel = {
+    expected = {"Name": distribution, "Version": version}
+    required_wheel = required_modules if required_modules is not None else {
         "thumbmoves/__init__.py",
         "thumbmoves/api.py",
         "thumbmoves/cli.py",
@@ -136,8 +143,12 @@ def validate_dist(directory: Path, package_root: Path = PACKAGE_ROOT) -> list[Pa
             f"{prefix}/LICENSE",
             f"{prefix}/README.md",
             f"{prefix}/pyproject.toml",
-            f"{prefix}/src/thumbmoves/api.py",
+            f"{prefix}/src/{module}/__init__.py",
         }
+        if distribution == "thumbmoves":
+            required_sdist.add(f"{prefix}/src/thumbmoves/api.py")
+        if extra_sdist:
+            required_sdist.update(f"{prefix}/{name}" for name in extra_sdist)
         missing = required_sdist - names
         if missing:
             raise ValueError(f"Source distribution is missing required files: {sorted(missing)}")

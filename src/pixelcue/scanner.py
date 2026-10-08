@@ -3,7 +3,9 @@ from __future__ import annotations
 import csv
 import heapq
 import json
+import multiprocessing as mp
 import os
+import queue as queue_module
 import threading
 import time
 import traceback
@@ -15,6 +17,7 @@ from typing import Any
 from PySide6.QtCore import QThread, Signal
 
 from .archives import is_archive, sample_archive
+from .os_thumbnail import os_cached_thumbnail_jpeg
 from .media import (
     first_video_frame,
     is_image,
@@ -25,16 +28,24 @@ from .media import (
     video_duration_seconds,
 )
 from .metadata import MagicDetector, stat_record
-from .model import JoyCaption4Bit, JoyCaptionError
+from .model import JoyCaptionError, create_image_tagger
+from .cluster_process import face_cluster_process_main
+from .logging_utils import log_event, log_exception
+from .analysis_store import AnalysisStore
 from .face import (
-    DeepFaceAnalyzer, DeepFaceUnavailable, FaceResult,
-    cluster_embeddings, CLUSTER_INTERVAL_SECONDS,
+    DeepFaceAnalyzer, DeepFaceUnavailable, FaceNotConfirmed, FaceResult,
+    cluster_embeddings, central_cluster_members,
+    cluster_attributes_confident, aggregate_cluster_attributes,
+    CLUSTER_INTERVAL_SECONDS, DEEPFACE_MODEL, DEEPFACE_DETECTOR, CELEBRITY_DB,
     deepface_available, deepface_install_command, validate_deepface_runtime,
 )
 
 
 # Files smaller than 500,000 bytes remain in the inventory but are not sent to JoyCaption.
 MIN_MEDIA_ANALYSIS_BYTES = 500_000
+MEDIA_CACHE_VERSION = "vlm-tags-v1"
+FACE_EMBEDDING_CACHE_VERSION = "face-embedding-v1"
+FACE_ATTRIBUTE_CACHE_VERSION = "face-attributes-v1"
 
 
 @dataclass
@@ -74,17 +85,30 @@ class ScanWorker(QThread):
     fatal_error = Signal(str)
     completed = Signal(object)
 
-    def __init__(self, start_dir: str, parent=None) -> None:
+    def __init__(self, start_dir: str, model_profile_id: str = "joycaption", parent=None) -> None:
         super().__init__(parent)
         self.start_dir = Path(start_dir)
+        self.model_profile_id = model_profile_id
 
         # Required filesystem traversal semantics: explicit FIFO todo list.
         self.todo: deque[QueueItem] = deque([QueueItem(self.start_dir)])
 
         self.detector = MagicDetector()
-        self.captioner = JoyCaption4Bit(
+        self.captioner = create_image_tagger(
+            self.model_profile_id,
             status_callback=self.model_status.emit,
             progress_callback=self.model_progress.emit,
+        )
+        self.analysis_store = AnalysisStore()
+        self.media_cache_engine = (
+            f"{MEDIA_CACHE_VERSION}:{self.model_profile_id}"
+        )
+        self.face_embedding_cache_engine = (
+            f"{FACE_EMBEDDING_CACHE_VERSION}:{DEEPFACE_MODEL}:{DEEPFACE_DETECTOR}"
+        )
+        celebrity_key = os.path.normcase(os.path.abspath(CELEBRITY_DB)) if CELEBRITY_DB else "none"
+        self.face_attribute_cache_engine = (
+            f"{FACE_ATTRIBUTE_CACHE_VERSION}:{DEEPFACE_MODEL}:{DEEPFACE_DETECTOR}:{celebrity_key}"
         )
 
         self.records: dict[str, dict[str, Any]] = {}
@@ -104,13 +128,21 @@ class ScanWorker(QThread):
         self.model_download_done = threading.Event()
         self.model_download_error: str | None = None
         self.model_download_thread: threading.Thread | None = None
+        self.model_prefetch_lock = threading.Lock()
 
-        # Media analysis is queued by file size, largest first.
-        # Ties preserve discovery order via a monotonically increasing sequence.
-        self.media_jobs: list[tuple[int, int, MediaJob]] = []
-        # Sampled videos are deliberately kept out of the normal JoyCaption heap.
-        # They are lower priority than every image/archive, regardless of filesize.
+        # Images use an explicit descending-by-filesize list. Each newly
+        # discovered image is inserted at the first position whose queued item
+        # is smaller, exactly preserving "largest discovered image is next".
+        # Equal-sized images retain discovery order.
+        self.image_jobs: list[tuple[int, int, MediaJob]] = []
+
+        # Archives stay separate from the image list, so archive ordering cannot
+        # disturb image-to-image filesize ordering.
+        self.archive_media_jobs: list[tuple[int, int, MediaJob]] = []
+
+        # Sampled videos remain lower priority than images and archives.
         self.video_media_jobs: list[tuple[int, int, MediaJob]] = []
+
         self.media_job_sequence = 0
         self.media_cv = threading.Condition()
         self.filesystem_discovery_done = False
@@ -130,15 +162,44 @@ class ScanWorker(QThread):
         self.face_jobs: deque[str] = deque()
         self.face_cv = threading.Condition()
         self.face_results: dict[str, FaceResult] = {}
+        self.face_cluster_summaries: dict[str, dict[str, Any]] = {}
         self.face_results_lock = threading.Lock()
         self.face_jobs_completed = 0
         self.face_worker_thread: threading.Thread | None = None
         self.face_stop = False
         self.face_disabled_reason: str | None = None
 
+        # CPU-heavy embedding clustering lives in a separate process so it can
+        # never hold the Qt/main-process GIL. The subprocess keeps its own
+        # embedding state; only new embeddings cross IPC on each ~10s update.
+        self.cluster_context = mp.get_context("spawn")
+        self.cluster_request_queue = self.cluster_context.Queue(maxsize=2)
+        self.cluster_result_queue = self.cluster_context.Queue(maxsize=2)
+        self.cluster_process = None
+        self.cluster_job_id = 0
+        self.cluster_job_inflight = False
+        self.cluster_sent_paths: set[str] = set()
+        self.latest_cluster_payload: list[dict[str, Any]] = []
+
+        # Throttle UI-facing discovery progress signals; per-file state remains
+        # in the worker and is delivered in full at completion.
+        self._last_current_path_emit = 0.0
+        self._last_discovered_count_emit = 0.0
+
     # ------------------------------------------------------------------
     # Lifecycle / synchronization
     # ------------------------------------------------------------------
+
+    def _run_logged_worker(self, worker_name: str, target) -> None:
+        log_event(worker_name, "start", "worker started")
+        try:
+            target()
+        except BaseException as exc:
+            log_exception(worker_name, "failure", exc)
+            log_event(worker_name, "finish", f"{type(exc).__name__}: {exc}", level="ERROR", success=False)
+            raise
+        else:
+            log_event(worker_name, "finish", "worker completed", success=True)
 
     def request_stop(self) -> None:
         self.stop_requested = True
@@ -159,21 +220,46 @@ class ScanWorker(QThread):
 
     def _emit_media_queue_count(self) -> None:
         with self.media_cv:
-            waiting = len(self.media_jobs) + len(self.video_media_jobs)
+            waiting = (
+                len(self.image_jobs)
+                + len(self.archive_media_jobs)
+                + len(self.video_media_jobs)
+            )
             completed = self.media_jobs_completed
         self.media_queue_count.emit(waiting, completed)
 
     @staticmethod
-    def _media_job_priority(rec: dict[str, Any]) -> int:
-        """Return a max-priority key based on file size.
-
-        Larger files should be processed first, so the heap stores a negative
-        size value. Missing/invalid sizes are treated as zero.
-        """
+    def _media_job_size(rec: dict[str, Any]) -> int:
         try:
-            return -int(rec.get("size_bytes") or 0)
+            return int(rec.get("size_bytes") or 0)
         except (TypeError, ValueError):
             return 0
+
+    def _insert_image_job_sorted(
+        self,
+        job: MediaJob,
+        size_bytes: int,
+        seq: int,
+    ) -> int:
+        """Insert image into descending filesize order.
+
+        Compare against the current first item. If the new image is larger, it
+        becomes index 0 (the next candidate). Otherwise walk down until the
+        first queued item that is smaller, then insert immediately before it.
+        Equal sizes retain discovery order by inserting after existing equals.
+        """
+        insert_at = 0
+        while insert_at < len(self.image_jobs):
+            queued_size, _queued_seq, _queued_job = self.image_jobs[insert_at]
+            if size_bytes > queued_size:
+                break
+            insert_at += 1
+
+        self.image_jobs.insert(
+            insert_at,
+            (size_bytes, seq, job),
+        )
+        return insert_at
 
     def _queue_media_job(
         self,
@@ -182,16 +268,47 @@ class ScanWorker(QThread):
         category: str,
     ) -> None:
         rec["category"] = category
+
         with self.media_cv:
-            priority = self._media_job_priority(rec)
+            size_bytes = self._media_job_size(rec)
             seq = self.media_job_sequence
             self.media_job_sequence += 1
-            target_heap = self.video_media_jobs if category == "video" else self.media_jobs
-            heapq.heappush(
-                target_heap,
-                (priority, seq, MediaJob(path, rec, category)),
-            )
+            job = MediaJob(path, rec, category)
+
+            if category == "image":
+                insert_at = self._insert_image_job_sorted(
+                    job,
+                    size_bytes,
+                    seq,
+                )
+                log_event(
+                    "vlm-media-queue",
+                    "image-insert",
+                    "image inserted into descending filesize queue",
+                    path=str(path),
+                    size_bytes=size_bytes,
+                    queue_position=insert_at,
+                    queue_length=len(self.image_jobs),
+                )
+
+            elif category == "archive":
+                # Archives remain size-prioritised, but in their own queue.
+                heapq.heappush(
+                    self.archive_media_jobs,
+                    (-size_bytes, seq, job),
+                )
+
+            elif category == "video":
+                heapq.heappush(
+                    self.video_media_jobs,
+                    (-size_bytes, seq, job),
+                )
+
+            else:
+                raise ValueError(f"Unsupported media queue category: {category}")
+
             self.media_cv.notify()
+
         self.record_updated.emit(str(path), rec)
         self._emit_media_queue_count()
 
@@ -223,7 +340,10 @@ class ScanWorker(QThread):
             self.records[key] = rec
             count = len(self.records)
 
-        self.discovered_count.emit(count)
+        now = time.monotonic()
+        if count <= 10 or now - self._last_discovered_count_emit >= 0.10:
+            self.discovered_count.emit(count)
+            self._last_discovered_count_emit = now
         self.record_updated.emit(key, rec)
         return rec
 
@@ -250,21 +370,161 @@ class ScanWorker(QThread):
         self.record_updated.emit(str(path), rec)
 
     # ------------------------------------------------------------------
+    # Persistent analysis cache
+    # ------------------------------------------------------------------
+
+    def _persist_media_analysis(
+        self,
+        path: Path,
+        rec: dict[str, Any],
+    ) -> None:
+        payload = {
+            "category": rec.get("category"),
+            "tags": list(rec.get("tags") or []),
+            "extra_metadata": dict(rec.get("extra_metadata") or {}),
+        }
+        # Never attempt to serialize transient in-memory video frames.
+        payload["extra_metadata"].pop("_pixelcue_sampled_frames", None)
+        self.analysis_store.save(
+            path,
+            kind="media_tags",
+            engine=self.media_cache_engine,
+            payload=payload,
+        )
+
+    def _restore_face_analysis_from_cache(
+        self,
+        path: Path,
+        rec: dict[str, Any],
+    ) -> bool:
+        payload = self.analysis_store.load(
+            path,
+            kind="face_embedding",
+            engine=self.face_embedding_cache_engine,
+        )
+        if payload is None:
+            return False
+
+        status = str(payload.get("status") or "ok")
+        if status == "face_not_confirmed":
+            rec["extra_metadata"]["deepface"] = {
+                "status": "face_not_confirmed",
+                "reason": payload.get("reason", "restored cached result"),
+                "analysis_cache": "restored",
+            }
+            self.record_updated.emit(str(path), rec)
+            return True
+
+        embedding = payload.get("embedding") or []
+        attributes = dict(payload.get("attributes") or {})
+        if not embedding:
+            return False
+
+        attributes["analysis_cache"] = "restored"
+        result = FaceResult(
+            str(path),
+            [float(value) for value in embedding],
+            attributes,
+            payload.get("celebrity_lookalike"),
+        )
+        with self.face_results_lock:
+            self.face_results[str(path)] = result
+
+        rec["extra_metadata"]["deepface"] = attributes
+        rec["extra_metadata"]["face_embedding"] = result.embedding
+        self.record_updated.emit(str(path), rec)
+        self.face_analyzed.emit(str(path), attributes)
+        log_event(
+            "analysis-store",
+            "face-restore",
+            "restored cached face embedding",
+            path=str(path),
+        )
+        return True
+
+    def _restore_or_queue_face_analysis(
+        self,
+        path: Path,
+        rec: dict[str, Any],
+    ) -> None:
+        if self._restore_face_analysis_from_cache(path, rec):
+            return
+        self._queue_face_analysis(path)
+
+    def _restore_media_analysis(
+        self,
+        path: Path,
+        rec: dict[str, Any],
+        category: str,
+    ) -> bool:
+        payload = self.analysis_store.load(
+            path,
+            kind="media_tags",
+            engine=self.media_cache_engine,
+        )
+        if payload is None:
+            return False
+
+        tags = [str(tag) for tag in payload.get("tags") or []]
+        rec["category"] = str(payload.get("category") or category)
+        rec["tags"] = tags
+        cached_extra = dict(payload.get("extra_metadata") or {})
+        cached_extra.pop("_pixelcue_sampled_frames", None)
+        rec["extra_metadata"].update(cached_extra)
+        rec["extra_metadata"]["analysis_cache"] = {
+            "media": "restored",
+            "engine": self.media_cache_engine,
+        }
+
+        thumb = b""
+        if category in {"image", "video"}:
+            thumb = os_cached_thumbnail_jpeg(path) or b""
+
+        if category == "image" and not thumb:
+            try:
+                thumb = thumbnail_jpeg(open_image(path))
+            except Exception:
+                thumb = b""
+
+        for tag in tags:
+            self.tag_counts[tag] += 1
+        self.tagged.emit(str(path), tags, thumb)
+        self.record_updated.emit(str(path), rec)
+        log_event(
+            "analysis-store",
+            "media-restore",
+            "restored cached VLM/media analysis",
+            path=str(path),
+            category=category,
+            tags=len(tags),
+            engine=self.media_cache_engine,
+        )
+
+        if category == "image" and any(
+            str(tag).casefold() == "faceidentity" for tag in tags
+        ):
+            self._restore_or_queue_face_analysis(path, rec)
+
+        return True
+
+    # ------------------------------------------------------------------
     # Model preparation
     # ------------------------------------------------------------------
 
     def _prefetch_model(self) -> None:
         try:
             self.captioner.ensure_downloaded()
+            log_event("vlm-model-prefetch", "success", "model/cache preparation succeeded")
         except Exception as e:
+            log_exception("vlm-model-prefetch", "setup-failure", e)
             self.model_download_error = str(e)
             self.processing_error.emit(
                 "[JoyCaption model]",
-                f"JoyCaption model setup failed: {type(e).__name__}: {e}",
+                f"VLM model setup failed: {type(e).__name__}: {e}",
                 str(e),
             )
             self.model_status.emit(
-                "JoyCaption 4-bit: model setup failed — see Errors"
+                "VLM model setup failed — see Errors"
             )
         finally:
             self.model_download_done.set()
@@ -272,22 +532,28 @@ class ScanWorker(QThread):
                 self.media_cv.notify_all()
 
     def _start_model_prefetch(self) -> None:
-        if self.model_download_thread is not None:
-            return
+        with self.model_prefetch_lock:
+            if self.model_download_thread is not None:
+                return
 
-        self.model_status.emit("Starting JoyCaption 4-bit model preparation …")
-        self.model_download_thread = threading.Thread(
-            target=self._prefetch_model,
-            name="pixelcue-joycaption-prefetch",
-            daemon=True,
-        )
-        self.model_download_thread.start()
+            self.model_status.emit(
+                "Starting VLM model preparation for first uncached media …"
+            )
+            self.model_download_thread = threading.Thread(
+                target=lambda: self._run_logged_worker(
+                    "vlm-model-prefetch", self._prefetch_model
+                ),
+                name="pixelcue-joycaption-prefetch",
+                daemon=True,
+            )
+            self.model_download_thread.start()
 
     def _wait_for_model_prefetch(
         self,
         path: Path,
         rec: dict[str, Any],
     ) -> bool:
+        self._start_model_prefetch()
         while not self.model_download_done.wait(timeout=0.10):
             if self.stop_requested:
                 rec["error"] = (
@@ -298,7 +564,7 @@ class ScanWorker(QThread):
 
         if self.model_download_error is not None:
             rec["error"] = (
-                "Tagging skipped because JoyCaption model setup failed: "
+                "Tagging skipped because VLM model setup failed: "
                 + self.model_download_error.splitlines()[0]
             )
             self.record_updated.emit(str(path), rec)
@@ -338,34 +604,306 @@ class ScanWorker(QThread):
                 self.face_cv.notify()
         self._emit_face_queue_count()
 
-    def _emit_face_clusters(self) -> None:
+    def _start_cluster_process(self) -> None:
+        if self.cluster_process is not None:
+            return
+        log_event("cluster-manager", "start", "launching clustering subprocess")
+        self.cluster_process = self.cluster_context.Process(
+            target=face_cluster_process_main,
+            args=(self.cluster_request_queue, self.cluster_result_queue),
+            name="pixelcue-face-cluster",
+            daemon=True,
+        )
+        self.cluster_process.start()
+        log_event(
+            "cluster-manager",
+            "started",
+            "clustering subprocess running",
+            child_pid=self.cluster_process.pid,
+        )
+
+    def _stop_cluster_process(self, reason: str = "scan complete") -> None:
+        process = self.cluster_process
+        if process is None:
+            return
+        try:
+            self.cluster_request_queue.put_nowait({"command": "stop", "reason": reason})
+        except Exception:
+            pass
+        process.join(timeout=5.0)
+        if process.is_alive():
+            log_event(
+                "cluster-manager",
+                "terminate",
+                "clustering subprocess did not stop in time",
+                level="WARNING",
+                child_pid=process.pid,
+            )
+            process.terminate()
+            process.join(timeout=2.0)
+        log_event(
+            "cluster-manager",
+            "finish",
+            reason,
+            success=process.exitcode == 0,
+            exitcode=process.exitcode,
+        )
+        self.cluster_process = None
+
+    def _serialize_new_face_embeddings(self) -> list[dict[str, Any]]:
         with self.face_results_lock:
-            results = list(self.face_results.values())
-        clusters = cluster_embeddings(results)
-        self.face_clusters_updated.emit([
-            {
-                "cluster_id": c["cluster_id"],
-                "representative_path": c["representative_path"],
+            new = [
+                {"path": path, "embedding": list(result.embedding)}
+                for path, result in self.face_results.items()
+                if path not in self.cluster_sent_paths
+            ]
+        return new
+
+    def _submit_face_cluster_job(self, *, force: bool = False) -> bool:
+        if self.cluster_process is None or not self.cluster_process.is_alive():
+            return False
+        if self.cluster_job_inflight:
+            return False
+        items = self._serialize_new_face_embeddings()
+        if not items and not force:
+            return False
+        if not items and force and self.latest_cluster_payload:
+            return False
+
+        self.cluster_job_id += 1
+        message = {
+            "command": "cluster",
+            "job_id": self.cluster_job_id,
+            "items": items,
+        }
+        try:
+            self.cluster_request_queue.put_nowait(message)
+        except queue_module.Full:
+            return False
+        for item in items:
+            self.cluster_sent_paths.add(str(item["path"]))
+        self.cluster_job_inflight = True
+        log_event(
+            "cluster-manager",
+            "job-submit",
+            "submitted face embeddings for clustering",
+            job_id=self.cluster_job_id,
+            new_embeddings=len(items),
+        )
+        return True
+
+    def _publish_cluster_payload(self, payload: list[dict[str, Any]]) -> None:
+        enriched = []
+        for cluster in payload:
+            item = dict(cluster)
+            representative = str(item.get("representative_path", ""))
+            item["summary"] = self.face_cluster_summaries.get(representative)
+            item["size"] = int(item.get("size", len(item.get("paths", []))))
+            enriched.append(item)
+        self.face_clusters_updated.emit(enriched)
+
+    def _poll_face_cluster_results(self) -> bool:
+        changed = False
+        while True:
+            try:
+                result = self.cluster_result_queue.get_nowait()
+            except queue_module.Empty:
+                break
+            self.cluster_job_inflight = False
+            if result.get("ok"):
+                self.latest_cluster_payload = list(result.get("clusters") or [])
+                self._publish_cluster_payload(self.latest_cluster_payload)
+                changed = True
+            else:
+                log_event(
+                    "cluster-manager",
+                    "job-failure",
+                    str(result.get("error") or "unknown clustering failure"),
+                    level="ERROR",
+                    job_id=result.get("job_id"),
+                )
+        return changed
+
+    def _wait_for_cluster_result(self, timeout: float = 120.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while self.cluster_job_inflight and time.monotonic() < deadline:
+            try:
+                result = self.cluster_result_queue.get(timeout=0.25)
+            except queue_module.Empty:
+                if self.stop_requested:
+                    return False
+                continue
+            self.cluster_job_inflight = False
+            if result.get("ok"):
+                self.latest_cluster_payload = list(result.get("clusters") or [])
+                self._publish_cluster_payload(self.latest_cluster_payload)
+                return True
+            log_event(
+                "cluster-manager",
+                "job-failure",
+                str(result.get("error") or "unknown clustering failure"),
+                level="ERROR",
+                job_id=result.get("job_id"),
+            )
+            return False
+        return not self.cluster_job_inflight
+
+    def _final_face_clusters(self) -> list[dict[str, Any]]:
+        # Finish any periodic job, then submit embeddings that arrived since it.
+        if self.cluster_job_inflight and not self._wait_for_cluster_result():
+            return []
+        self._submit_face_cluster_job(force=True)
+        if self.cluster_job_inflight and not self._wait_for_cluster_result():
+            return []
+
+        with self.face_results_lock:
+            by_path = dict(self.face_results)
+        hydrated = []
+        for raw in self.latest_cluster_payload:
+            members = [by_path[path] for path in raw.get("paths", []) if path in by_path]
+            if not members:
+                continue
+            cluster = dict(raw)
+            cluster["members"] = members
+            cluster["centroid"] = list(raw.get("centroid") or [])
+            hydrated.append(cluster)
+        return hydrated
+
+    def _emit_face_clusters(
+        self,
+        clusters: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if clusters is None:
+            self._publish_cluster_payload(self.latest_cluster_payload)
+            return
+        payload = []
+        for c in clusters:
+            payload.append({
+                "cluster_id": int(c["cluster_id"]),
+                "centroid": list(c.get("centroid") or []),
+                "representative_path": str(c["representative_path"]),
                 "paths": list(c["paths"]),
                 "size": len(c["paths"]),
-            }
-            for c in clusters
-        ])
+            })
+        self.latest_cluster_payload = payload
+        self._publish_cluster_payload(payload)
 
-    def _face_worker(self) -> None:
-        face_ok, face_reason = validate_deepface_runtime()
-        if not face_ok:
-            self.face_disabled_reason = face_reason
-            self.processing_error.emit(
-                "[DeepFace]",
-                self.face_disabled_reason,
-                self.face_disabled_reason,
-            )
-            self.status.emit(
-                "DeepFace disabled for this scan; JoyCaption/filesystem processing continues."
-            )
+    def _finalize_face_clusters(
+        self,
+        analyzer: DeepFaceAnalyzer,
+        clusters: list[dict[str, Any]],
+    ) -> None:
+        """Run expensive demographic/celebrity work only on final clusters."""
+        if not clusters:
+            self._emit_face_clusters(clusters)
             return
 
+        self.status.emit(
+            f"Final face-cluster analysis: {len(clusters)} cluster(s)"
+        )
+
+        for cluster in clusters:
+            if self.stop_requested:
+                break
+
+            representative = cluster["representative_path"]
+            candidates = central_cluster_members(cluster, limit=3)
+            samples: list[dict[str, Any]] = []
+            sampled_paths: list[str] = []
+            sample_errors: list[str] = []
+            confident = False
+
+            for member in candidates:
+                if self.stop_requested:
+                    break
+
+                try:
+                    cached = self.analysis_store.load(
+                        member.path,
+                        kind="face_attributes",
+                        engine=self.face_attribute_cache_engine,
+                    )
+                    if cached is not None:
+                        if str(cached.get("status") or "ok") == "face_not_confirmed":
+                            sample_errors.append(
+                                f"{member.path}: cached face attributes not confirmed: "
+                                f"{cached.get('reason', 'unknown reason')}"
+                            )
+                            continue
+                        attrs = dict(cached.get("attributes") or {})
+                        attrs["analysis_cache"] = "restored"
+                        log_event(
+                            "analysis-store",
+                            "face-attributes-restore",
+                            "restored cached cluster attribute analysis",
+                            path=member.path,
+                        )
+                    else:
+                        attrs = analyzer.analyze_attributes(
+                            member.path,
+                            preferred_detector=member.attributes.get("detector_backend"),
+                        )
+                        self.analysis_store.save(
+                            member.path,
+                            kind="face_attributes",
+                            engine=self.face_attribute_cache_engine,
+                            payload={"status": "ok", "attributes": attrs},
+                        )
+
+                    samples.append(attrs)
+                    sampled_paths.append(member.path)
+
+                    # We need two agreeing samples to establish cross-image
+                    # confidence. If they agree, skip the third.
+                    if len(samples) >= 2 and cluster_attributes_confident(samples):
+                        confident = True
+                        break
+                except FaceNotConfirmed as e:
+                    self.analysis_store.save(
+                        member.path,
+                        kind="face_attributes",
+                        engine=self.face_attribute_cache_engine,
+                        payload={"status": "face_not_confirmed", "reason": str(e)},
+                    )
+                    sample_errors.append(f"{member.path}: {e}")
+                except Exception as e:
+                    sample_errors.append(
+                        f"{member.path}: {type(e).__name__}: {e}"
+                    )
+
+            summary = aggregate_cluster_attributes(
+                samples,
+                sampled_paths,
+                confident,
+            )
+            summary.update({
+                "cluster_id": cluster["cluster_id"],
+                "cluster_size": len(cluster["paths"]),
+                "representative_path": representative,
+                "candidate_paths": [member.path for member in candidates],
+                "sample_errors": sample_errors,
+                "analysis_stage": "final_cluster",
+            })
+            self.face_cluster_summaries[representative] = summary
+
+            for member in cluster["members"]:
+                rec = self.records.get(member.path)
+                if rec is None:
+                    continue
+                member_summary = dict(summary)
+                member_summary["sampled_this_image"] = member.path in sampled_paths
+                rec["extra_metadata"]["face_cluster"] = member_summary
+                self.record_updated.emit(member.path, rec)
+
+            # Let the face-cluster pane acquire summaries as final analysis progresses.
+            self._emit_face_clusters(clusters)
+
+        self._emit_face_clusters(clusters)
+
+    def _face_worker(self) -> None:
+        # Do not import/validate the DeepFace runtime up front. A restarted scan
+        # may be able to restore every face embedding/attribute result from the
+        # permanent cache without touching TensorFlow at all.
         analyzer = DeepFaceAnalyzer(status_callback=self.status.emit)
         last_cluster = time.monotonic()
 
@@ -380,8 +918,11 @@ class ScanWorker(QThread):
                     path = self.face_jobs.popleft()
 
             if path is not None:
+                log_event("deepface-worker", "job-start", "extracting face embedding", path=path)
+                face_success = False
+                face_reason = None
                 try:
-                    result = analyzer.analyze(path)
+                    result = analyzer.extract_embedding(path)
                     with self.face_results_lock:
                         self.face_results[path] = result
 
@@ -391,8 +932,45 @@ class ScanWorker(QThread):
                         rec["extra_metadata"]["face_embedding"] = result.embedding
                         self.record_updated.emit(path, rec)
 
+                    self.analysis_store.save(
+                        path,
+                        kind="face_embedding",
+                        engine=self.face_embedding_cache_engine,
+                        payload={
+                            "status": "ok",
+                            "embedding": result.embedding,
+                            "attributes": result.attributes,
+                            "celebrity_lookalike": result.celebrity_lookalike,
+                        },
+                    )
                     self.face_analyzed.emit(path, result.attributes)
+                    face_success = True
+                except FaceNotConfirmed as e:
+                    face_reason = f"face not confirmed: {e}"
+                    # This is not a processing failure: the VLM nominated the
+                    # image, but the dedicated face detector did not confirm it.
+                    rec = self.records.get(path)
+                    if rec is not None:
+                        rec["extra_metadata"]["deepface"] = {
+                            "status": "face_not_confirmed",
+                            "reason": str(e),
+                        }
+                        self.record_updated.emit(path, rec)
+                    self.analysis_store.save(
+                        path,
+                        kind="face_embedding",
+                        engine=self.face_embedding_cache_engine,
+                        payload={
+                            "status": "face_not_confirmed",
+                            "reason": str(e),
+                        },
+                    )
+                    self.status.emit(
+                        f"DeepFace did not confirm a face; continuing: {path}"
+                    )
                 except DeepFaceUnavailable as e:
+                    face_reason = f"DeepFace unavailable: {e}"
+                    log_exception("deepface-worker", "job-failure", e, path=path)
                     self.face_disabled_reason = str(e)
                     self.processing_error.emit(
                         "[DeepFace]",
@@ -406,32 +984,45 @@ class ScanWorker(QThread):
                         self.face_jobs.clear()
                     return
                 except Exception as e:
+                    face_reason = f"{type(e).__name__}: {e}"
+                    log_exception("deepface-worker", "job-failure", e, path=path)
                     rec = self.records.get(path)
                     if rec is not None:
                         self._record_error(Path(path), rec, "DeepFace", e)
                 finally:
+                    log_event(
+                        "deepface-worker", "job-finish", face_reason or "success",
+                        level="INFO" if face_success else "WARNING",
+                        success=face_success, path=path,
+                    )
                     with self.face_cv:
                         self.face_jobs_completed += 1
                     self._emit_face_queue_count()
 
+            self._poll_face_cluster_results()
             now = time.monotonic()
             if now - last_cluster >= CLUSTER_INTERVAL_SECONDS:
-                self._emit_face_clusters()
+                self._submit_face_cluster_job()
                 last_cluster = now
 
-            # Once filesystem/media work has ended and the face queue is empty,
-            # publish one final clustering result and finish.
+            # Once all embeddings are collected, freeze final clusters and only
+            # then run age/gender/ethnicity/emotion/celebrity analysis on up to
+            # three centroid-nearest images per cluster.
             with self.face_cv:
                 done = self.media_analysis_done and not self.face_jobs
             if done:
-                self._emit_face_clusters()
+                clusters = self._final_face_clusters()
+                self._emit_face_clusters(clusters)
+                self._finalize_face_clusters(analyzer, clusters)
                 return
 
     def _start_face_worker(self) -> None:
         if self.face_worker_thread is not None:
             return
         self.face_worker_thread = threading.Thread(
-            target=self._face_worker,
+            target=lambda: self._run_logged_worker(
+                "deepface-worker", self._face_worker
+            ),
             name="pixelcue-deepface",
             daemon=True,
         )
@@ -478,6 +1069,9 @@ class ScanWorker(QThread):
             if job is None:
                 continue
 
+            log_event("video-sampler", "job-start", "sampling video", path=str(job.path))
+            video_success = False
+            video_reason = None
             try:
                 frames = list(sample_video_frames(job.path, max_frames=5))
                 job.record["extra_metadata"]["duration_seconds"] = video_duration_seconds(job.path)
@@ -490,9 +1084,17 @@ class ScanWorker(QThread):
                 # making the JoyCaption worker perform video decoding/seeking.
                 job.record["_pixelcue_sampled_frames"] = frames
                 self._queue_media_job(job.path, job.record, "video")
+                video_success = True
             except Exception as e:
+                video_reason = f"{type(e).__name__}: {e}"
+                log_exception("video-sampler", "job-failure", e, path=str(job.path))
                 self._record_error(job.path, job.record, "Video sampling", e)
             finally:
+                log_event(
+                    "video-sampler", "job-finish", video_reason or "success",
+                    level="INFO" if video_success else "ERROR",
+                    success=video_success, path=str(job.path),
+                )
                 with self.video_sample_cv:
                     self.video_sample_jobs_completed += 1
                 self._emit_video_sample_queue_count()
@@ -501,7 +1103,9 @@ class ScanWorker(QThread):
         if self.video_sample_worker_thread is not None:
             return
         self.video_sample_worker_thread = threading.Thread(
-            target=self._video_sample_worker,
+            target=lambda: self._run_logged_worker(
+                "video-sampler", self._video_sample_worker
+            ),
             name="pixelcue-video-sampler",
             daemon=True,
         )
@@ -531,13 +1135,14 @@ class ScanWorker(QThread):
             "height": image.height,
         })
 
-        thumb = thumbnail_jpeg(image)
+        thumb = os_cached_thumbnail_jpeg(path) or thumbnail_jpeg(image)
         for tag in tags:
             self.tag_counts[tag] += 1
         self.tagged.emit(str(path), tags, thumb)
+        self._persist_media_analysis(path, rec)
 
         if any(str(tag).casefold() == "faceidentity" for tag in tags):
-            self._queue_face_analysis(path)
+            self._restore_or_queue_face_analysis(path, rec)
 
     def _process_video(self, path: Path, rec: dict[str, Any]) -> None:
         if not self._wait_for_model_prefetch(path, rec):
@@ -547,7 +1152,7 @@ class ScanWorker(QThread):
 
         self.status.emit(f"Tagging pre-sampled video frames: {path}")
         all_tags: dict[str, str] = {}
-        thumb = b""
+        thumb = os_cached_thumbnail_jpeg(path) or b""
 
         frames = rec.pop("_pixelcue_sampled_frames", [])
         for ts, frame in frames:
@@ -564,6 +1169,7 @@ class ScanWorker(QThread):
         for tag in tags:
             self.tag_counts[tag] += 1
         self.tagged.emit(str(path), tags, thumb)
+        self._persist_media_analysis(path, rec)
 
     def _process_archive(self, path: Path, rec: dict[str, Any]) -> None:
         if not self._wait_for_model_prefetch(path, rec):
@@ -630,8 +1236,13 @@ class ScanWorker(QThread):
 
         if tags:
             self.tagged.emit(str(path), tags, thumb)
+        self._persist_media_analysis(path, rec)
 
     def _process_media_job(self, job: MediaJob) -> None:
+        worker = "vlm-media-worker"
+        log_event(worker, "job-start", "processing media", path=str(job.path), category=job.category)
+        success = False
+        failure_reason = None
         try:
             if job.category == "image":
                 self._process_image(job.path, job.record)
@@ -639,22 +1250,34 @@ class ScanWorker(QThread):
                 self._process_video(job.path, job.record)
             elif job.category == "archive":
                 self._process_archive(job.path, job.record)
+            success = not bool(job.record.get("error"))
+            if not success:
+                failure_reason = str(job.record.get("error"))
         except JoyCaptionError as e:
+            failure_reason = f"{type(e).__name__}: {e}"
+            log_exception(worker, "job-failure", e, path=str(job.path), category=job.category)
             self._record_error(
-                job.path,
-                job.record,
-                "JoyCaption",
-                e,
-                details=str(e),
+                job.path, job.record, "JoyCaption", e, details=str(e)
             )
             self.status.emit(
-                "JoyCaption failed for this file; PixelCue will continue with the next queued media item. "
+                "VLM tagging failed for this file; PixelCue will continue with the next queued media item. "
                 "Filesystem discovery is unaffected."
             )
         except Exception as e:
+            failure_reason = f"{type(e).__name__}: {e}"
+            log_exception(worker, "job-failure", e, path=str(job.path), category=job.category)
             self._record_error(job.path, job.record, "Processing", e)
         finally:
             self.record_updated.emit(str(job.path), job.record)
+            log_event(
+                worker,
+                "job-finish",
+                failure_reason or "success",
+                level="INFO" if success else "ERROR",
+                success=success,
+                path=str(job.path),
+                category=job.category,
+            )
 
     def _media_worker(self) -> None:
         # libmagic wrappers are kept thread-local: filesystem metadata and
@@ -665,24 +1288,34 @@ class ScanWorker(QThread):
             job = None
             with self.media_cv:
                 while not self.stop_requested:
-                    # Ordinary images/archives always win. This preserves the
-                    # largest-first policy within that class without allowing a
-                    # multi-GB video to jump ahead merely because it is large.
-                    if self.media_jobs:
-                        _priority, _seq, job = heapq.heappop(self.media_jobs)
+                    # Always take the largest discovered, unprocessed image.
+                    # image_jobs is maintained in descending filesize order.
+                    if self.image_jobs:
+                        _size, _seq, job = self.image_jobs.pop(0)
                         break
 
-                    # Do not spend JoyCaption time on video until filesystem
-                    # discovery has completed, so newly discovered normal images
-                    # can never be blocked behind video inference.
+                    # Archives are a separate high-priority class and therefore
+                    # cannot disturb image-to-image ordering.
+                    if self.archive_media_jobs:
+                        _priority, _seq, job = heapq.heappop(
+                            self.archive_media_jobs
+                        )
+                        break
+
+                    # Do not spend VLM time on video until filesystem discovery
+                    # has completed, so newly discovered still images can never
+                    # be blocked behind video inference.
                     if self.filesystem_discovery_done and self.video_media_jobs:
-                        _priority, _seq, job = heapq.heappop(self.video_media_jobs)
+                        _priority, _seq, job = heapq.heappop(
+                            self.video_media_jobs
+                        )
                         break
 
                     if (
                         self.filesystem_discovery_done
                         and self.video_sampling_done
-                        and not self.media_jobs
+                        and not self.image_jobs
+                        and not self.archive_media_jobs
                         and not self.video_media_jobs
                     ):
                         return
@@ -707,7 +1340,9 @@ class ScanWorker(QThread):
             return
 
         self.media_worker_thread = threading.Thread(
-            target=self._media_worker,
+            target=lambda: self._run_logged_worker(
+                "vlm-media-worker", self._media_worker
+            ),
             name="pixelcue-media-tagger",
             daemon=True,
         )
@@ -756,6 +1391,12 @@ class ScanWorker(QThread):
         except (TypeError, ValueError):
             size_bytes = 0
 
+        # Restore permanent analysis before applying current queue policy. A
+        # cached result costs no model time, even if the file is now below the
+        # minimum size threshold.
+        if self._restore_media_analysis(path, rec, category):
+            return
+
         if size_bytes < MIN_MEDIA_ANALYSIS_BYTES:
             rec["category"] = category
             rec["extra_metadata"]["joycaption_skipped"] = True
@@ -789,8 +1430,11 @@ class ScanWorker(QThread):
             item = self.todo.popleft()
             path = item.path
 
-            # This signal now genuinely represents discovery, not media analysis.
-            self.current_path.emit(str(path))
+            # UI progress is throttled so a fast filesystem cannot flood Qt.
+            now = time.monotonic()
+            if now - self._last_current_path_emit >= 0.10:
+                self.current_path.emit(str(path))
+                self._last_current_path_emit = now
 
             if path.is_symlink() and not item.follow_symlink:
                 rec = self._ensure_record(path, follow_symlink=False)
@@ -865,8 +1509,14 @@ class ScanWorker(QThread):
     # ------------------------------------------------------------------
 
     def run(self) -> None:
+        log_event(
+            "filesystem-scan", "start", "scan worker started",
+            start_path=str(self.start_dir), model_profile=self.model_profile_id,
+        )
+        scan_success = False
         try:
-            self._start_model_prefetch()
+            self._start_cluster_process()
+            self.model_status.emit("VLM model deferred until uncached media is found")
             self._start_video_sample_worker()
             self._start_media_worker()
             self._start_face_worker()
@@ -877,12 +1527,18 @@ class ScanWorker(QThread):
 
             # This method never waits for model/tagging work.
             self._walk_filesystem()
+            with self.records_lock:
+                self.discovered_count.emit(len(self.records))
 
             self.filesystem_discovery_done = True
             with self.video_sample_cv:
                 self.video_sample_cv.notify_all()
             with self.media_cv:
-                queued = len(self.media_jobs) + len(self.video_media_jobs)
+                queued = (
+                    len(self.image_jobs)
+                    + len(self.archive_media_jobs)
+                    + len(self.video_media_jobs)
+                )
                 completed = self.media_jobs_completed
                 self.media_cv.notify_all()
 
@@ -925,16 +1581,29 @@ class ScanWorker(QThread):
                         break
                     self.face_worker_thread.join(timeout=0.25)
 
+            self._stop_cluster_process("scan complete")
+
             with self.records_lock:
                 final_records = list(self.records.values())
 
             self.completed.emit(final_records)
+            scan_success = True
+            log_event(
+                "filesystem-scan", "finish", "scan completed", success=True,
+                files=len(final_records),
+            )
 
-        except Exception:
+        except Exception as exc:
+            log_exception("filesystem-scan", "failure", exc)
+            self._stop_cluster_process(f"scan failure: {type(exc).__name__}: {exc}")
             self.fatal_error.emit(traceback.format_exc())
             with self.records_lock:
                 final_records = list(self.records.values())
             self.completed.emit(final_records)
+            log_event(
+                "filesystem-scan", "finish", f"{type(exc).__name__}: {exc}",
+                level="ERROR", success=False, files=len(final_records),
+            )
 
 
 TSV_COLUMNS = [

@@ -13,6 +13,6 @@ def test_runtime_requires_python313_and_stable_tensorflow():
     assert 'tf_version != "2.21.0"' in source
     assert 'tf_keras_version != "2.21.0"' in source
 
-def test_scanner_uses_face_runtime_preflight():
-    source=(ROOT/"src"/"pixelcue"/"scanner.py").read_text()
-    assert "validate_deepface_runtime()" in source
+def test_runtime_preflight_remains_inside_face_analyzer_path():
+    source=(ROOT/"src"/"pixelcue"/"face.py").read_text()
+    assert "ok, reason = validate_deepface_runtime()" in source

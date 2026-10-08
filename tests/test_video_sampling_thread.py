@@ -7,7 +7,8 @@ ROOT = Path(__file__).parents[1]
 def test_video_sampling_has_dedicated_worker_thread():
     source = (ROOT / "src" / "pixelcue" / "scanner.py").read_text(encoding="utf-8")
     assert 'name="pixelcue-video-sampler"' in source
-    assert "target=self._video_sample_worker" in source
+    assert "video-sampler" in source
+    assert "self._run_logged_worker" in source
 
 
 def test_filesystem_classifier_queues_video_sampling_not_media_directly():

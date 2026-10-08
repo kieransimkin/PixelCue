@@ -21,17 +21,19 @@ def test_walk_filesystem_only_queues_media_not_processes_it():
 def test_media_worker_is_separate_thread():
     source = (ROOT / "src" / "pixelcue" / "scanner.py").read_text(encoding="utf-8")
     assert 'name="pixelcue-media-tagger"' in source
-    assert "target=self._media_worker" in source
+    assert "vlm-media-worker" in source
+    assert "self._run_logged_worker" in source
 
 
-def test_run_starts_model_and_media_workers_before_walking():
+def test_run_starts_workers_before_walk_but_defers_vlm_model():
     source = (ROOT / "src" / "pixelcue" / "scanner.py").read_text(encoding="utf-8")
     run_pos = source.index("def run(self)")
-    model_pos = source.index("self._start_model_prefetch()", run_pos)
     media_pos = source.index("self._start_media_worker()", run_pos)
     walk_pos = source.index("self._walk_filesystem()", run_pos)
-    assert model_pos < walk_pos
     assert media_pos < walk_pos
+    run_end = source.index("TSV_COLUMNS", run_pos)
+    assert "self._start_model_prefetch()" not in source[run_pos:run_end]
+    assert "VLM model deferred until uncached media is found" in source[run_pos:run_end]
 
 
 def test_gui_exposes_discovery_and_media_queue_counts():

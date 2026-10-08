@@ -20,7 +20,7 @@ def test_download_thread_starts_without_waiting_for_metadata_thread():
 def test_default_model_has_immediate_fallback_total():
     source = (ROOT / "src" / "pixelcue" / "model.py").read_text(encoding="utf-8")
     assert "MODEL_FALLBACK_TOTAL_BYTES = 17_000_000_000" in source
-    assert "total = MODEL_FALLBACK_TOTAL_BYTES" in source
+    assert "total = int(self.fallback_total_bytes)" in source
 
 def test_gui_marks_fallback_denominator_approximate():
     source = (ROOT / "src" / "pixelcue" / "gui.py").read_text(encoding="utf-8")

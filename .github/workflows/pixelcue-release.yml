@@ -1,0 +1,56 @@
+name: PixelCue tests and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONPATH: src:packages/thumbmoves/src
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install model-free test and package tools
+        run: python -m pip install build twine pytest pillow PySide6 fastapi python-socketio uvicorn 'httpx2>=2,<3' platformdirs python-magic py7zr rarfile
+      - name: Run service, media and thumbnail tests without downloading models
+        run: python -m pytest -q
+      - name: Build and validate installable distributions
+        run: |
+          python -m build
+          python scripts/pixelcue_release.py --dist dist
+          python -m twine check --strict dist/*.whl dist/*.tar.gz
+      - name: Verify tagged source identity
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python scripts/pixelcue_release.py --tag "$GITHUB_REF_NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pixelcue-dist
+          path: dist/*
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pixelcue-dist
+          path: dist
+      - name: Publish tested packages and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "PixelCue $GITHUB_REF_NAME" --generate-notes
