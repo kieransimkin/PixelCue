@@ -1,2 +1,3 @@
 
 recursive-include docs/branding *.svg *.png *.md
+include AGENTS.md CONTRIBUTING.md
