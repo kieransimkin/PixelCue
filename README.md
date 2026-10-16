@@ -2,6 +2,10 @@
 
 ## Visual analysis API (0.9.0)
 
+![Original synthetic image, actual PixelCue measurements and the PrismMoves reporting handoff](docs/images/visual-profile-example.png)
+
+Generated measurement figure from the 0.9.0 engine using an original synthetic fixture. Palette and statistics are actual results; the figure is not a UI screenshot or a test of pretrained accuracy.
+
 All downloaded models and model-specific caches default to the owning project's `models/` (current working directory), excluded by `.gitignore`. `PIXELCUE_MODELS_DIR` selects a composed project's models directory; the analysis API also accepts `models_dir`. Existing explicit legacy model paths remain supported; no existing weights are moved or deleted. `python -m pixelcue.visual_models clip dinov2 blip --models-dir models` explicitly installs selected neural profiles with pinned revision, licence metadata and SHA-256 manifests. Nothing downloads during ordinary statistics-only analysis.
 
 PixelCue now owns reusable bounded image measurements and explicit visual-model adapters for visual-language tools such as [PrismMoves](https://github.com/kieransimkin/PrismMoves). No separate PrismMoves analysis engine is needed.

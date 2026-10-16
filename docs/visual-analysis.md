@@ -1,5 +1,9 @@
 # Visual analysis contract
 
+![Actual PixelCue palette and texture measurements beside their synthetic input and reporting handoff](images/visual-profile-example.png)
+
+Generated measurement figure for PixelCue 0.9.0; neural interpretations are excluded from this figure. It illustrates the measured output, not an interface screenshot.
+
 PixelCue owns the engine; PrismMoves owns visual-language evidence organisation and reporting. Use the service or the public `pixelcue.visual_analysis.analyse_image` / `pixelcue.visual_service.VisualAnalysisService.analyse` APIs rather than copying numerical or model code.
 
 ## Measurement conditions
