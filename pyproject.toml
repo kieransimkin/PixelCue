@@ -5,9 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pixelcue"
 version = "0.9.0"
-description = "Local visual-media tagging and search with selectable vision-language models and a REST service. https://kieransimkin.co.uk/"
+description = "Local visual-media tagging and image analysis with selectable models, inspectable measurements and a REST service. https://kieransimkin.co.uk/"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
+keywords = ["DanceFlow", "image-analysis", "visual-media", "computer-vision", "VLM", "colour-analysis"]
 license = {text = "MIT"}
 dependencies = [
   "fastapi>=0.115,<1",
