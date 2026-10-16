@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0 - 2026-10-16
+
+- Add reusable bounded visual statistics, optional explicit CLIP/DINOv2/BLIP/OCR adapters and per-model provenance/failure receipts.
+- Add the local `/v1/analysis` service and capability discovery; compose existing PixelCue VLM taggers without copying them.
+- Add axis-specific profile comparisons and exact duplicate/analysis-raster evidence. Preserve unknowns and model interpretation limits.
+- Preserve `/v1/keywords`, GUI, media, scan/cache and ThumbMoves contracts; add model-free synthetic regression coverage.
+
 ## 0.8.8 - 2026-10-08
 
 - Add explicit agent capability, improvement, validation and upstream PR guidance to the README and contributor instructions.

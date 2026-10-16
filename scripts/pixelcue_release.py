@@ -37,7 +37,8 @@ def distributions(directory: Path, root: Path = ROOT) -> list[Path]:
     return validate_dist(
         directory, root, distribution="pixelcue", module="pixelcue", tag_pattern=TAG,
         required_modules={f"pixelcue/{name}.py" for name in
-                          ("__init__", "main", "gui", "server", "service", "model", "analysis_store", "os_thumbnail")},
+                          ("__init__", "main", "gui", "server", "service", "model", "analysis_store", "os_thumbnail",
+                           "visual_analysis", "visual_models", "visual_service")},
         extra_sdist={"packages/thumbmoves/pyproject.toml", "packages/thumbmoves/src/thumbmoves/api.py",
                      "scripts/pixelcue_release.py", "scripts/thumbmoves_release.py"},
     )
