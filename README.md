@@ -2,7 +2,7 @@
 
 ## Visual analysis API (0.9.0)
 
-![Original synthetic image, actual PixelCue measurements and the PrismMoves reporting handoff](docs/images/visual-profile-example.png)
+![Original synthetic image, actual PixelCue measurements and the PrismMoves reporting handoff](https://raw.githubusercontent.com/kieransimkin/PixelCue/main/docs/images/visual-profile-example.png)
 
 Generated measurement figure from the 0.9.0 engine using an original synthetic fixture. Palette and statistics are actual results; the figure is not a UI screenshot or a test of pretrained accuracy.
 
