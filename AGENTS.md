@@ -1,5 +1,7 @@
 # Agent instructions for PixelCue
 
+- Store downloaded model weights and model-specific caches in the owning project's `models/`, excluded by `models/` in `.gitignore` and distributions. Use `PIXELCUE_MODELS_DIR` for a composed project's model root. Do not silently populate a global cache or relocate existing weights without verifying references and provenance.
+
 - Read README.md, docs/ and the service/model adapters. Inspect batch analysis, metadata, model loading, local HTTP integration and the shared ThumbMoves package before adding a parallel implementation.
 - Use the relevant existing capabilities as fully as the task warrants. Always look for a useful improvement to this tool. Fix a reusable gap here rather than copying its engine or carrying a private workaround; record why no change is justified when that is the result.
 - Submit improvements as PRs to https://github.com/kieransimkin/PixelCue/pulls. Never leave a completed reusable improvement only in a local fork. Keep changes focused and preserve the tool's identity and compatibility contracts.

@@ -16,12 +16,25 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .model import DEFAULT_TAGGER_PROFILE, TAGGER_PROFILES
 from .service import KeywordExtractionService, UnsupportedMediaError
+from .visual_service import VisualAnalysisService
 
 
 class KeywordRequest(BaseModel):
     path: str = Field(min_length=1, description="Path to one file on the PixelCue server.")
     model: str = Field(default=DEFAULT_TAGGER_PROFILE)
     request_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class AnalysisRequest(BaseModel):
+    path: str = Field(min_length=1)
+    models: list[str] = Field(default_factory=list, max_length=4)
+    model_paths: dict[str, str] = Field(default_factory=dict)
+    models_dir: str | None = None
+    keyword_models: list[str] = Field(default_factory=list, max_length=5)
+    allow_download: bool = False
+    max_edge: int = Field(default=768, ge=32, le=2048)
+    background: str = Field(default="#ffffff", pattern="^#[0-9a-fA-F]{6}$")
+    device: str = Field(default="cpu", pattern="^(cpu|cuda|mps)$")
 
 
 @dataclass(frozen=True)
@@ -48,6 +61,7 @@ def create_server(
     )
     http = FastAPI(title="PixelCue", version=__version__)
     keyword_service = service or KeywordExtractionService()
+    visual_service = VisualAnalysisService(keyword_service)
 
     if origins:
         http.add_middleware(
@@ -80,7 +94,18 @@ def create_server(
             "service": "pixelcue",
             "version": __version__,
             "models": sorted(TAGGER_PROFILES),
+            "visual_analysis": {"schema": "pixelcue.visual-analysis/1", "route": "/v1/analysis",
+                                "models": ["clip", "dinov2", "blip", "ocr"]},
         }
+
+    @http.post("/v1/analysis")
+    async def analysis(request: AnalysisRequest) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(visual_service.analyse, **request.model_dump())
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @http.post("/v1/keywords", response_model=list[str])
     async def keywords(request: KeywordRequest) -> list[str]:

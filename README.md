@@ -1,5 +1,30 @@
 # PixelCue
 
+## Visual analysis API (0.9.0)
+
+![Original synthetic image, actual PixelCue measurements and the PrismMoves reporting handoff](https://raw.githubusercontent.com/kieransimkin/PixelCue/main/docs/images/visual-profile-example.png)
+
+Generated measurement figure from the 0.9.0 engine using an original synthetic fixture. Palette and statistics are actual results; the figure is not a UI screenshot or a test of pretrained accuracy.
+
+All downloaded models and model-specific caches default to the owning project's `models/` (current working directory), excluded by `.gitignore`. `PIXELCUE_MODELS_DIR` selects a composed project's models directory; the analysis API also accepts `models_dir`. Existing explicit legacy model paths remain supported; no existing weights are moved or deleted. `python -m pixelcue.visual_models clip dinov2 blip --models-dir models` explicitly installs selected neural profiles with pinned revision, licence metadata and SHA-256 manifests. Nothing downloads during ordinary statistics-only analysis.
+
+PixelCue now owns reusable bounded image measurements and explicit visual-model adapters for visual-language tools such as [PrismMoves](https://github.com/kieransimkin/PrismMoves). No separate PrismMoves analysis engine is needed.
+
+`POST /v1/analysis` accepts a server-local `path`, optional `models` (`clip`, `dinov2`, `blip`, `ocr`), `model_paths`, `keyword_models` (existing PixelCue VLM profiles), `max_edge` (32–2048, default 768), `background` (`#RRGGBB`, default white), `device` (`cpu`, `cuda`, `mps`) and `allow_download` (default false). `/health.visual_analysis` advertises the route and model names. The existing bare-list `/v1/keywords` and Socket.IO contracts remain unchanged.
+
+```python
+from pixelcue.visual_service import VisualAnalysisService, compare_profiles
+
+service = VisualAnalysisService()
+profile = service.analyse("cover.png", models=["clip", "dinov2", "blip"])
+# Requested uncached models remain unavailable; no download occurs by default.
+print(profile["measurements"]["colour"]["palette"])
+```
+
+The `pixelcue.visual-analysis/1` receipt includes exact file hash, oriented source/analysis dimensions, alpha/ICC treatment, approximate Lab palette, hue/saturation and linear luminance, entropy, LBP/GLCM texture, edges/orientations/mirror errors, spatial grid, Fourier bands and spectral-residual signal novelty. Optional CLIP prompt comparisons, DINOv2 embeddings, BLIP captions and OCR hypotheses retain their own model/dependency receipts and failures. `compare_profiles([...])` provides axis-specific distances and exact duplicate/analysis-raster matches without inventing a brand score. Embedded ICC conversion failures are disclosed; animated images use frame zero only. See [visual analysis methods and limits](docs/visual-analysis.md).
+
+Neural adapters use local cached weights unless `allow_download=True` is explicitly supplied; remote custom model code is disabled. OCR additionally needs `pip install 'pixelcue[analysis]'` and a Tesseract executable. To reuse the existing keyword taggers, supply a `KeywordExtractionService` to `VisualAnalysisService`; the HTTP route does this automatically. Existing taggers may download on first use, so `keyword_models` are not invoked unless download consent is explicit. No face analysis, training, hosted inference or automatic media scan is part of this route.
+
 Install the published package with Python 3.13: `pip install pixelcue`. Tagged releases run the maintained test suite, validate source/package identity, and publish the same checksum-verified wheel and source archive to PyPI and GitHub. The GitHub Actions trusted publisher is restricted to `kieransimkin/PixelCue`, workflow `release.yml`, environment `pypi`; no PyPI password or API token is stored in source.
 
 [![PixelCue logo](https://raw.githubusercontent.com/kieransimkin/PixelCue/v0.8.6/docs/branding/logo.png)](https://kieransimkin.co.uk/danceflow/)

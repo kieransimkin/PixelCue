@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pixelcue"
-version = "0.8.8"
-description = "Local visual-media tagging and search with selectable vision-language models and a REST service. https://kieransimkin.co.uk/"
+version = "0.9.0"
+description = "Local visual-media tagging and image analysis with selectable models, inspectable measurements and a REST service. https://kieransimkin.co.uk/"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
+keywords = ["DanceFlow", "image-analysis", "visual-media", "computer-vision", "VLM", "colour-analysis"]
 license = {text = "MIT"}
 dependencies = [
   "fastapi>=0.115,<1",
@@ -15,6 +16,7 @@ dependencies = [
   "uvicorn>=0.34,<1",
   "PySide6>=6.7",
   "Pillow>=10.4",
+  "numpy>=1.26,<3",
   "torch>=2.14.1",
   "transformers>=4.53",
   "accelerate>=1.6",
@@ -30,6 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+analysis = ["pytesseract>=0.3.13"]
 faces = [
   "deepface>=0.0.95",
   "tensorflow==2.21.0",
