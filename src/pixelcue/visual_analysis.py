@@ -214,14 +214,14 @@ def measure_image(image):
 
 
 def analyse_image(path, *, models=(), model_paths=None, allow_download=False,
-                  max_edge=768, background="#ffffff", device="cpu"):
+                  max_edge=768, background="#ffffff", device="cpu", models_dir=None):
     """Reusable PixelCue API. Measurements plus explicit independent model receipts."""
     from .visual_models import run_models
     image, source = load_image(path, max_edge=max_edge, background=background)
     try:
         return {"schema": "pixelcue.visual-analysis/1", "analysis_version": ANALYSIS_VERSION,
             "source": source, "measurements": measure_image(image),
-            "models": run_models(image, models, model_paths or {}, allow_download=allow_download, device=device),
+            "models": run_models(image, models, model_paths or {}, allow_download=allow_download, device=device, models_dir=models_dir),
             "limits": ["Measurements describe a composited, bounded analysis raster, not untouched source pixels.",
                 "One image does not establish recurring brand rules, lineage, intent, rights or audience response.",
                 "Motion, responsive behaviour, font identity, consent and actual legibility require separate evidence."]}

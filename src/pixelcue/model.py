@@ -158,8 +158,8 @@ def _version(name: str) -> str:
 
 
 def default_model_dir() -> Path:
-    from platformdirs import user_cache_dir
-    return Path(user_cache_dir("PixelCue", "DanceFlow")) / "models" / "joycaption-beta-one-source"
+    from .model_paths import project_models_dir
+    return project_models_dir() / "joycaption-beta-one-source"
 
 
 
@@ -992,9 +992,9 @@ class SmolVLMTagger(JoyCaption4Bit):
     """Lightweight Transformers VLM backend with the same tagger interface."""
 
     def __init__(self, profile: TaggerProfile, status_callback=None, progress_callback=None):
-        from platformdirs import user_cache_dir
 
-        model_dir = Path(user_cache_dir("PixelCue", "DanceFlow")) / "models" / profile.id
+        from .model_paths import project_models_dir
+        model_dir = project_models_dir() / profile.id
         super().__init__(
             model_id=profile.repo_id,
             model_dir=model_dir,

@@ -12,11 +12,11 @@ class VisualAnalysisService:
         self._lock = threading.Lock()
 
     def analyse(self, path, *, models=(), model_paths=None, keyword_models=(),
-                allow_download=False, max_edge=768, background="#ffffff", device="cpu"):
+                allow_download=False, max_edge=768, background="#ffffff", device="cpu", models_dir=None):
         # Bound GPU work across concurrent analysis requests. Keyword service owns its lock.
         with self._lock:
             result = analyse_image(path, models=models, model_paths=model_paths,
-                allow_download=allow_download, max_edge=max_edge, background=background, device=device)
+                allow_download=allow_download, max_edge=max_edge, background=background, device=device, models_dir=models_dir)
             for profile in dict.fromkeys(keyword_models):
                 receipt = {"name": f"pixelcue-tagger:{profile}", "evidence_class": "interpretation",
                            "allow_download": allow_download}

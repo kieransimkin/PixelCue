@@ -2,6 +2,8 @@
 
 ## Visual analysis API (0.9.0)
 
+All downloaded models and model-specific caches default to the owning project's `models/` (current working directory), excluded by `.gitignore`. `PIXELCUE_MODELS_DIR` selects a composed project's models directory; the analysis API also accepts `models_dir`. Existing explicit legacy model paths remain supported; no existing weights are moved or deleted. `python -m pixelcue.visual_models clip dinov2 blip --models-dir models` explicitly installs selected neural profiles with pinned revision, licence metadata and SHA-256 manifests. Nothing downloads during ordinary statistics-only analysis.
+
 PixelCue now owns reusable bounded image measurements and explicit visual-model adapters for visual-language tools such as [PrismMoves](https://github.com/kieransimkin/PrismMoves). No separate PrismMoves analysis engine is needed.
 
 `POST /v1/analysis` accepts a server-local `path`, optional `models` (`clip`, `dinov2`, `blip`, `ocr`), `model_paths`, `keyword_models` (existing PixelCue VLM profiles), `max_edge` (32–2048, default 768), `background` (`#RRGGBB`, default white), `device` (`cpu`, `cuda`, `mps`) and `allow_download` (default false). `/health.visual_analysis` advertises the route and model names. The existing bare-list `/v1/keywords` and Socket.IO contracts remain unchanged.

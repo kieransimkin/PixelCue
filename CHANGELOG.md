@@ -6,6 +6,7 @@
 - Add the local `/v1/analysis` service and capability discovery; compose existing PixelCue VLM taggers without copying them.
 - Add axis-specific profile comparisons and exact duplicate/analysis-raster evidence. Preserve unknowns and model interpretation limits.
 - Preserve `/v1/keywords`, GUI, media, scan/cache and ThumbMoves contracts; add model-free synthetic regression coverage.
+- Store new neural and VLM downloads under the owning project's ignored models/ folder; add an explicit pinned-checkpoint installer with hash manifests, preserving legacy paths until deliberate migration.
 
 ## 0.8.8 - 2026-10-08
 

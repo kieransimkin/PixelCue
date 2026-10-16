@@ -29,6 +29,7 @@ class AnalysisRequest(BaseModel):
     path: str = Field(min_length=1)
     models: list[str] = Field(default_factory=list, max_length=4)
     model_paths: dict[str, str] = Field(default_factory=dict)
+    models_dir: str | None = None
     keyword_models: list[str] = Field(default_factory=list, max_length=5)
     allow_download: bool = False
     max_edge: int = Field(default=768, ge=32, le=2048)
