@@ -1,3 +1,10 @@
+# Development 0.9.2.dev1
+
+Independent confidence-checked local optical flow, longer-baseline slow-motion
+measurements, hash-bound contact sheets/original keyframes, retained PCM RMS
+metadata and a guarded abstract-appearance vocabulary. No pretrained weights are
+required by the tests or included in distributions.
+
 # 0.9.1 - 2026-10-18
 
 Temporal-first preset evidence, bounded representative-frame interpretation,

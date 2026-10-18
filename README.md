@@ -1,5 +1,15 @@
 # PixelCue
 
+## Complete preset portraits and contact sheets (development)
+
+The hybrid workflow combines reference-free style, colour, shape and movement
+observations with controlled silence/music and sound-probe comparisons in **one
+paragraph**. Numerical analysis runs first; at most 24 distinct output images
+receive appearance inference. Labelled contact sheets and exact original
+keyframes are retained for comparison with the paragraph.
+See [hybrid preset analysis](docs/hybrid-preset-analysis.md) for the unified
+launcher, no-rerender reanalysis, model policy, data retention and limitations.
+
 ## Temporal evidence and efficient visual batches (0.9.1)
 
 The new `pixelcue.visual_sequence.analyse_sequences(records)` API measures ordered,

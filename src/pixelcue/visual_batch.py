@@ -32,6 +32,17 @@ VISUALISER_PROMPTS = {
                   "a mostly empty composition"],
 }
 
+# Abstract appearance vocabulary only. Motion direction, sound causation and
+# reference object names are deliberately absent from this bank.
+VISUALISER_PROMPTS["motif"] += [
+    "a layered geometric tunnel", "thin luminous filaments or ribbons",
+    "faceted crystalline polygons", "fluid marbled colour fields",
+    "wireframe surfaces", "kaleidoscopic wedges and mirrored facets"]
+VISUALISER_PROMPTS["aesthetic"] = [
+    "minimalist abstract visual design", "dense intricate geometric visual design",
+    "organic fluid abstract visual design", "retro pixel-art visual design",
+    "luminous psychedelic abstract visual design", "restrained monochrome abstract visual design"]
+
 
 def prompt_digest(bank):
     return hashlib.sha256(json.dumps(bank, sort_keys=True).encode()).hexdigest()

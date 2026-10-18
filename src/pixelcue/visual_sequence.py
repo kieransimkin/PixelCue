@@ -6,7 +6,7 @@ motion across sparse gaps, or treat optical-flow confidence as a probability.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 import math
 import statistics
 import time
@@ -16,7 +16,7 @@ from PIL import Image
 
 from .visual_analysis import load_image, _linear
 
-SEQUENCE_VERSION = "1.0.0"
+SEQUENCE_VERSION = "1.1.0"
 MAX_FRAMES = 32768
 HUES = ("red", "orange", "yellow", "lime", "green", "turquoise",
         "cyan", "blue", "indigo", "violet", "magenta", "pink")
@@ -78,7 +78,7 @@ def _unit_grey(image):
     return np.asarray(image.convert("L"), dtype=np.uint8)
 
 
-def pair_motion(previous, current, dt, *, max_gap=.25):
+def _global_pair_motion(previous, current, dt, *, max_gap=.25):
     """Forward/backward LK tracks, robust similarity fit and dense residual flow.
 
     Rotation sign is in image coordinates: positive means clockwise. Translation
@@ -173,6 +173,55 @@ def pair_motion(previous, current, dt, *, max_gap=.25):
                 method="LK forward/backward + RANSAC similarity + Farneback residual")
 
 
+def pair_motion(previous, current, dt, *, max_gap=.25):
+    result = _global_pair_motion(previous, current, dt, max_gap=max_gap)
+    # Keep global status and its rejection reason intact. A local estimate must
+    # never fabricate rotation/scale values for the sound-response comparator.
+    if result["status"] != "measured" and 0 < dt <= min(max_gap, .65):
+        try:
+            from .visual_motion_detail import local_flow
+            result["local"] = local_flow(previous, current, dt)
+        except ImportError:
+            result["local"] = {"status": "unavailable", "reason": "OpenCV unavailable"}
+    return result
+
+
+def _detail_summary(summary, transitions, lagged):
+    local = [t for t in transitions if t.get("local", {}).get("status") == "measured"]
+    active = [t for t in local if t["local"]["speed_per_second"] > .015
+              and t["local"]["moving_fraction"] > .3]
+    varied = [t for t in active if t["local"]["dispersion_per_second"] > .008]
+    if len(active) >= 6 and len(active)/max(1, len(transitions)) >= .3:
+        selected = varied if len(varied) >= .65*len(active) else active
+        summary["motion"].append({"label": "locally varying motion" if selected is varied else "local motion",
+            "evidence": [t["id"] for t in selected], "scope": "local",
+            "support_fraction": len(selected)/max(1, len(transitions))})
+    summary["local_measured_transitions"] = len(local)
+    summary["local_coverage"] = len(local)/max(1, len(transitions))
+    measured = [t for t in lagged if t.get("status") == "measured"]
+    # Slow labels need non-overlapping, LONGER-BASELINE estimates; lowering the
+    # adjacent-frame threshold alone tends to convert tracking jitter to motion.
+    for field, limit, positive, negative in (
+        ("log_scale_per_second", .008, "slow outward expansion", "slow inward contraction"),
+        ("rotation_radians_per_second", .012, "slow clockwise rotation", "slow counterclockwise rotation")):
+        values = [t[field] for t in measured if _finite(t.get(field))]
+        rate = _median(values)
+        if (len(values) < 6 or len(values)/max(1, len(lagged)) < .6
+                or rate is None or not limit < abs(rate) < .035):
+            continue
+        stable = [t for t in measured if _finite(t.get(field)) and t[field]*rate > 0
+                  and abs(t[field]) > limit]
+        if len(stable)/len(values) >= .8:
+            summary["motion"].append({"label": positive if rate > 0 else negative,
+                "median_rate": rate, "scope": "long-baseline", "evidence": [t["id"] for t in stable],
+                "support_fraction": len(stable)/len(values)})
+    summary["lagged_measured_transitions"] = len(measured)
+    summary["global_motion_status"] = summary.get("motion_status", "unknown")
+    if summary["motion"]:
+        summary["motion_status"] = "measured"
+    return summary
+
+
 def brightness_period(frames):
     """Require uniform cadence, adequate duration and >=3 observed cycles."""
     if len(frames) < 16:
@@ -254,7 +303,7 @@ def _condition_summary(frames, transitions):
     return result
 
 
-def analyse_sequences(records, *, max_edge=256, max_gap=.25, background="#000000"):
+def analyse_sequences(records, *, max_edge=256, max_gap=.25, background="#000000", multi_lag=False):
     """Analyse explicit frame records, independently for each condition.
 
     Records: id, condition_id, seconds, path, sha256 (required), and optional
@@ -294,6 +343,8 @@ def analyse_sequences(records, *, max_edge=256, max_gap=.25, background="#000000
             raise ValueError("Timestamps must strictly increase within each condition")
         previous, prior_row = None, None
         frames, transitions = [], []
+        lagged, history = [], deque()
+        last_lag_end = -float("inf")
         try:
             for row in rows:
                 try:
@@ -307,12 +358,14 @@ def analyse_sequences(records, *, max_edge=256, max_gap=.25, background="#000000
                     if previous is not None:
                         previous.close()
                     previous, prior_row = None, None
+                    while history:
+                        history.popleft()[1].close()
                     continue
                 features = frame_features(image)
                 item = {"id": row["id"], "condition_id": condition, "seconds": row["seconds"],
                         "sha256": source["sha256"], "pixels_sha256": source["analysed_pixels_sha256"],
                         "analysis_dimensions": source["analysis_dimensions"], "features": features}
-                for key in ("imagery", "audio_mode", "sample"):
+                for key in ("imagery", "audio_mode", "sample", "pcm_rms", "frame_index"):
                     if key in row:
                         item[key] = row[key]
                 if row.get("input_path") and row.get("input_sha256"):
@@ -335,6 +388,20 @@ def analyse_sequences(records, *, max_edge=256, max_gap=.25, background="#000000
                     except (OSError, ValueError):
                         item["input_comparison"] = {"status": "unavailable"}
                 frames.append(item)
+                if multi_lag:
+                    if prior_row is not None and row["seconds"]-prior_row["seconds"] > max_gap:
+                        while history:
+                            history.popleft()[1].close()
+                    while history and row["seconds"]-history[0][0]["seconds"] > .65:
+                        history.popleft()[1].close()
+                    candidates = [(r, im) for r, im in history if .35 <= row["seconds"]-r["seconds"] <= .6
+                                  and r["seconds"] >= last_lag_end]
+                    if candidates:
+                        old, raster = min(candidates, key=lambda x: abs(row["seconds"]-x[0]["seconds"]-.4))
+                        motion = pair_motion(raster, image, row["seconds"]-old["seconds"], max_gap=.65)
+                        lagged.append(dict(motion, id=old["id"]+"~>"+row["id"], a=old["id"], b=row["id"]))
+                        last_lag_end = row["seconds"]
+                    history.append((row, image.copy()))
                 if previous is not None:
                     motion = pair_motion(previous, image, row["seconds"]-prior_row["seconds"], max_gap=max_gap)
                     transitions.append(dict(motion, id=prior_row["id"]+"->"+row["id"],
@@ -342,11 +409,14 @@ def analyse_sequences(records, *, max_edge=256, max_gap=.25, background="#000000
                     previous.close()
                 previous, prior_row = image, row
         finally:
+            while history:
+                history.popleft()[1].close()
             if previous is not None:
                 previous.close()
         all_frames.extend(frames)
-        conditions.append({"id": condition, "summary": _condition_summary(frames, transitions),
-                           "transitions": transitions})
+        conditions.append({"id": condition,
+                           "summary": _detail_summary(_condition_summary(frames, transitions), transitions, lagged),
+                           "transitions": transitions, "lagged_transitions": lagged})
     try:
         import cv2
         flow_version = cv2.__version__
@@ -355,7 +425,7 @@ def analyse_sequences(records, *, max_edge=256, max_gap=.25, background="#000000
     return {"schema": "pixelcue.visual-sequence/1", "analysis_version": SEQUENCE_VERSION,
             "state": "completed" if not errors else "partial", "frames": all_frames,
             "conditions": conditions, "errors": errors,
-            "settings": {"max_edge": max_edge, "max_gap_seconds": max_gap, "background": background},
+            "settings": {"max_edge": max_edge, "max_gap_seconds": max_gap, "background": background, "multi_lag": multi_lag},
             "dependencies": {"numpy": np.__version__, "opencv": flow_version},
             "seconds": round(time.monotonic()-started, 3),
             "limits": ["Optical-flow fits are bounded estimates, not calibrated probabilities.",
