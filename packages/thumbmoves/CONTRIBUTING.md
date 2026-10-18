@@ -10,3 +10,9 @@ Agents and people are welcome to improve ThumbMoves. Review its current capabili
 Maintainers review accepted changes, reserve a fresh version and publish a matching GitHub release from the validated source. They verify installable assets, checksums and each configured registry separately. Existing tags and release assets remain immutable. A submitted PR is a contribution awaiting review, not a published release or permission for unrelated deployment.
 
 Website: [https://kieransimkin.co.uk/danceflow/](https://kieransimkin.co.uk/danceflow/).
+
+## Full ecosystem and current releases
+
+Before every new workflow, check the latest stable official release and the actual imported runtime. ThumbMoves has a separate `thumbmoves-v` release stream inside PixelCue. Read the [shared release preflight](https://github.com/kieransimkin/DanceFlow/blob/main/docs/workflows/release-preflight.md), [full capability reference](https://github.com/kieransimkin/DanceFlow/blob/main/docs/capabilities/thumbmoves.md) and PixelCue's people-and-agent ecosystem guide.
+
+Consider the whole DanceFlow ecosystem and compose every relevant supported capability. Use ThumbMoves for existing cache previews; a miss never authorises opening originals or generating thumbnails. Improve a demonstrated reusable gap in its canonical package, or record why current behaviour meets the need. Preserve source identity, privacy, model-local storage and publication/deployment boundaries.
