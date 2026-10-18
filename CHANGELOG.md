@@ -1,7 +1,7 @@
-# Development update 0.9.1.dev1
+# 0.9.1 - 2026-10-18
 
 Temporal-first preset evidence, bounded representative-frame interpretation,
-shared model-major adapters and readable per-preset descriptions. Not published.
+shared model-major adapters and readable per-preset descriptions.
 
 # Changelog
 

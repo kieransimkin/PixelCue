@@ -1,6 +1,6 @@
 # PixelCue
 
-## Temporal evidence and efficient visual batches
+## Temporal evidence and efficient visual batches (0.9.1)
 
 The new `pixelcue.visual_sequence.analyse_sequences(records)` API measures ordered,
 hash-bound frame records without loading a neural model. It provides guarded
