@@ -10,10 +10,12 @@ from thumbmoves_release import source_version, validate_dist, write_checksums
 
 ROOT = Path(__file__).resolve().parents[1]
 TAG = re.compile(r"^v([0-9]+\.[0-9]+\.[0-9]+)$")
+# Development wheels can be tested; publication tags remain stable vX.Y.Z only.
+SOURCE_VERSION = re.compile(r"^v([0-9]+\.[0-9]+\.[0-9]+(?:\.dev[0-9]+)?)$")
 
 
 def version(root: Path = ROOT) -> str:
-    return source_version(root, distribution="pixelcue", module="pixelcue", tag_pattern=TAG)
+    return source_version(root, distribution="pixelcue", module="pixelcue", tag_pattern=SOURCE_VERSION)
 
 
 def validate_tag(tag: str, root: Path = ROOT, *, check_git: bool = True) -> str:
@@ -35,10 +37,10 @@ def validate_tag(tag: str, root: Path = ROOT, *, check_git: bool = True) -> str:
 
 def distributions(directory: Path, root: Path = ROOT) -> list[Path]:
     return validate_dist(
-        directory, root, distribution="pixelcue", module="pixelcue", tag_pattern=TAG,
+        directory, root, distribution="pixelcue", module="pixelcue", tag_pattern=SOURCE_VERSION,
         required_modules={f"pixelcue/{name}.py" for name in
                           ("__init__", "main", "gui", "server", "service", "model", "analysis_store", "os_thumbnail",
-                           "visual_analysis", "visual_models", "visual_service", "model_paths")},
+                           "visual_analysis", "visual_models", "visual_service", "visual_sequence", "visual_batch", "model_paths")},
         extra_sdist={"packages/thumbmoves/pyproject.toml", "packages/thumbmoves/src/thumbmoves/api.py",
                      "scripts/pixelcue_release.py", "scripts/thumbmoves_release.py"},
     )

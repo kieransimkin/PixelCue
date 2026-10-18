@@ -31,41 +31,16 @@ def _version(name):
 
 
 def _transformer(name, image, checkpoint, allow_download, device, cache_dir=None):
-    import torch
-    from transformers import AutoImageProcessor, AutoModel, AutoProcessor, BlipForConditionalGeneration, CLIPModel
-    kwargs = {"local_files_only": not allow_download, "trust_remote_code": False,
-              "cache_dir": str(cache_dir) if cache_dir else None}
-    if device not in ("cpu", "cuda", "mps"):
-        raise ValueError("device must be cpu, cuda or mps")
-    processor = (AutoImageProcessor if name == "dinov2" else AutoProcessor).from_pretrained(checkpoint, **kwargs)
-    cls = {"clip": CLIPModel, "dinov2": AutoModel, "blip": BlipForConditionalGeneration}[name]
-    model = cls.from_pretrained(checkpoint, **kwargs).to(device).eval()
+    """Single-image compatibility wrapper over the same reusable batch adapter."""
+    from .visual_batch import TransformerSession
+    root = cache_dir or project_models_dir()/".cache"/"huggingface"
+    session = TransformerSession(name, checkpoint, allow_download=allow_download,
+                                 device=device, cache_dir=root, prompts=PROMPTS)
     try:
-        with torch.inference_mode():
-            if name == "clip":
-                texts = [p for group in PROMPTS.values() for p in group]
-                inputs = processor(text=texts, images=image, return_tensors="pt", padding=True).to(device)
-                out = model(**inputs)
-                scores = (out.image_embeds @ out.text_embeds.T)[0].float().cpu().tolist()
-                groups, start = {}, 0
-                for axis, prompts in PROMPTS.items():
-                    groups[axis] = sorted([{"prompt": p, "cosine_similarity": float(s)}
-                        for p, s in zip(prompts, scores[start:start+len(prompts)])],
-                        key=lambda v: -v["cosine_similarity"])
-                    start += len(prompts)
-                return {"axes": groups, "embedding": out.image_embeds[0].float().cpu().tolist(),
-                    "prompt_bank": PROMPTS, "caveat": "Relative to this prompt bank; cosine similarity is not probability or calibrated confidence."}, model
-            inputs = processor(images=image, return_tensors="pt").to(device)
-            if name == "dinov2":
-                vector = model(**inputs).last_hidden_state[:, 0, :][0]
-                vector = torch.nn.functional.normalize(vector, dim=0)
-                return {"embedding": vector.float().cpu().tolist(), "caveat": "Embedding has no semantic labels; compare only matching model/revision/preprocessing."}, model
-            tokens = model.generate(**inputs, max_new_tokens=96, do_sample=False)
-            return {"caption": processor.batch_decode(tokens, skip_special_tokens=True)[0],
-                    "caveat": "Generated caption may hallucinate subjects, text, materials and intent."}, model
+        # The caller retains the model briefly for its original metadata contract.
+        return session.infer(image), session.model
     finally:
-        # Do not retain all selected models simultaneously in a long-lived service.
-        del model
+        session.close()
 
 
 def run_models(image, names, paths, *, allow_download=False, device="cpu", models_dir=None):

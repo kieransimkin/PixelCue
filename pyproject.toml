@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pixelcue"
-version = "0.9.0"
+version = "0.9.1.dev1"
 description = "Local visual-media tagging and image analysis with selectable models, inspectable measurements and a REST service. https://kieransimkin.co.uk/"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -32,6 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+sequence = ["opencv-python-headless>=4.10,<5"]
 analysis = ["pytesseract>=0.3.13"]
 faces = [
   "deepface>=0.0.95",
@@ -40,7 +41,7 @@ faces = [
   "retina-face>=0.0.14",
   "mtcnn>=0.1.0",
 ]
-dev = ["pytest>=8", "httpx2>=2,<3", "python-socketio[client]>=5.12,<6"]
+dev = ["opencv-python-headless>=4.10,<5", "pytest>=8", "httpx2>=2,<3", "python-socketio[client]>=5.12,<6"]
 
 [project.scripts]
 pixelcue = "pixelcue.main:main"
@@ -55,7 +56,7 @@ Repository = "https://github.com/kieransimkin/PixelCue"
 where = ["src"]
 
 [dependency-groups]
-dev = ["pytest>=8", "httpx2>=2,<3", "python-socketio[client]>=5.12,<6"]
+dev = ["opencv-python-headless>=4.10,<5", "pytest>=8", "httpx2>=2,<3", "python-socketio[client]>=5.12,<6"]
 
 [[tool.uv.index]]
 name = "pytorch-cu132"

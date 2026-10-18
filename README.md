@@ -1,5 +1,22 @@
 # PixelCue
 
+## Temporal evidence and efficient visual batches
+
+The new `pixelcue.visual_sequence.analyse_sequences(records)` API measures ordered,
+hash-bound frame records without loading a neural model. It provides guarded
+rotation/translation/scale estimates, dense-flow deformation proxies, brightness
+periodicity, blank/washout detection and cheap descriptors for representative-frame
+selection. Install the `sequence` extra for OpenCV. Conditions, missing frames,
+large sampling gaps and unsupported tracking remain distinct.
+
+`pixelcue.visual_batch.analyse_batch(paths, models=["clip", "blip"])` reuses one
+selected adapter across up to 64 images before loading the next model. It shares
+the transformer implementation with the existing single-image API. Its optional
+visualiser-specific prompt bank is spatial only: no motion inferred from a still.
+Both APIs honour project-local models and explicit download permission. No hosted
+inference is added. PrismMoves owns selection and the final descriptive prose.
+See [sequence and batch API](docs/visual-sequence.md) for bounds and limitations.
+
 ## Visual analysis API (0.9.0)
 
 ![Original synthetic image, actual PixelCue measurements and the PrismMoves reporting handoff](https://raw.githubusercontent.com/kieransimkin/PixelCue/main/docs/images/visual-profile-example.png)
