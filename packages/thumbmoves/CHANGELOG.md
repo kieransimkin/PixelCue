@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- Refresh the shared release preflight and contributor guidance. The cache-only API and miss behavior are unchanged.
+
 ## 0.1.2 - 2026-10-08
 
 - Add explicit agent capability, improvement, validation and PR guidance targeting the maintained PixelCue repository.
