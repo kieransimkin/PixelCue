@@ -1,6 +1,6 @@
 # PixelCue
 
-## Complete preset portraits and contact sheets (development)
+## Complete preset portraits and contact sheets (0.9.2)
 
 The hybrid workflow combines reference-free style, colour, shape and movement
 observations with controlled silence/music and sound-probe comparisons in **one

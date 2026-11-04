@@ -1,4 +1,4 @@
-# Development 0.9.2.dev1
+# 0.9.2
 
 Independent confidence-checked local optical flow, longer-baseline slow-motion
 measurements, hash-bound contact sheets/original keyframes, retained PCM RMS

@@ -107,7 +107,7 @@ is not proof of response to a particular instrument, drum, vocal or separated st
 
 ## Development distribution and validation scope
 
-This update supplies PixelCue 0.9.2.dev1 and PrismMoves 0.3.0.dev2 development wheels.
+The hybrid workflow requires PixelCue 0.9.2 and PrismMoves 0.3.0. Use their verified releases and record the installed versions.
 The installer puts them in `models/.venv-hybrid-analysis/` and reuses dependencies
 from the existing project-local Python 3.13 analysis environments read-only. It
 does not replace those environments or modify `analysis-releases.json`. Source
