@@ -3,14 +3,105 @@
 from __future__ import annotations
 
 
+def _screen_atlas(image):
+    """At most four dark connected regions in a <=256px search raster."""
+    import numpy as np
+    from PIL import Image, ImageFilter, ImageOps, ImageStat
+
+    small = image.convert("L")
+    small.thumbnail((256, 256))
+    threshold = small.point(lambda value: 255 if value < 135 else 0)
+    eroded = threshold.filter(ImageFilter.MinFilter(5))
+    mask = np.asarray(eroded).copy() > 0
+    threshold.close()
+    eroded.close()
+    scale_x, scale_y = image.width / small.width, image.height / small.height
+    small.close()
+    height, width = mask.shape
+    regions = []
+    for y in range(height):
+        for x in range(width):
+            if not mask[y, x]:
+                continue
+            stack = [(x, y)]
+            mask[y, x] = False
+            left = right = x
+            top = bottom = y
+            area = 0
+            while stack:
+                px, py = stack.pop()
+                left, right = min(left, px), max(right, px)
+                top, bottom = min(top, py), max(bottom, py)
+                area += 1
+                for nx, ny in ((px - 1, py), (px + 1, py), (px, py - 1), (px, py + 1)):
+                    if 0 <= nx < width and 0 <= ny < height and mask[ny, nx]:
+                        mask[ny, nx] = False
+                        stack.append((nx, ny))
+            if (
+                area >= 40
+                and right - left >= 12
+                and bottom - top >= 6
+                and (right - left) * (bottom - top) < width * height * 0.4
+            ):
+                regions.append(
+                    (
+                        area,
+                        (
+                            max(0, int((left - 2) * scale_x)),
+                            max(0, int((top - 2) * scale_y)),
+                            min(image.width, round((right + 3) * scale_x)),
+                            min(image.height, round((bottom + 3) * scale_y)),
+                        ),
+                    )
+                )
+    tiles = []
+    for _, bounds in sorted(regions, reverse=True)[:4]:
+        crop = image.crop(bounds).convert("L")
+        if ImageStat.Stat(crop).mean[0] < 128:
+            replacement = ImageOps.invert(crop)
+            crop.close()
+            crop = replacement
+        replacement = ImageOps.autocontrast(crop)
+        crop.close()
+        crop = replacement
+        original = crop.size
+        crop.thumbnail((768, 256))
+        tiles.append((crop, bounds, original))
+    if not tiles:
+        return None, []
+    atlas = Image.new(
+        "RGB",
+        (max(t[0].width for t in tiles) + 32, sum(t[0].height + 32 for t in tiles)),
+        "white",
+    )
+    mappings, cursor = [], 16
+    for crop, bounds, original in tiles:
+        atlas.paste(crop, (16, cursor))
+        mappings.append(
+            (
+                16,
+                cursor,
+                crop.width,
+                crop.height,
+                bounds[0],
+                bounds[1],
+                original[0] / crop.width,
+                original[1] / crop.height,
+            )
+        )
+        cursor += crop.height + 32
+        crop.close()
+    return atlas, mappings
+
+
 def read_words(image, *, profile="document"):
     import pytesseract
 
     if profile not in {"document", "screen"}:
         raise ValueError("Unknown OCR profile")
     words = []
-    variants = [(image, 1.0, 1.0)]
-    scaled = None
+    variants = [(image, 1.0, 1.0, None)]
+    scaled = atlas = None
     if profile == "screen" and min(image.size) >= 256:
         # Tesseract can discard a large flat-colour button as a graphic at one
         # scale. A second bounded raster recovers some of these labels. This is
@@ -22,10 +113,13 @@ def read_words(image, *, profile="document"):
             Image.Resampling.BICUBIC,
         )
         variants.append(
-            (scaled, image.width / scaled.width, image.height / scaled.height)
+            (scaled, image.width / scaled.width, image.height / scaled.height, None)
         )
+        atlas, mappings = _screen_atlas(image)
+        if atlas is not None:
+            variants.append((atlas, 1.0, 1.0, mappings))
     try:
-        for raster, sx, sy in variants:
+        for raster, sx, sy, mappings in variants:
             data = pytesseract.image_to_data(
                 raster, output_type=pytesseract.Output.DICT, timeout=30
             )
@@ -42,6 +136,22 @@ def read_words(image, *, profile="document"):
                     round(width * sx),
                     round(height * sy),
                 ]
+                if mappings is not None:
+                    matched = [
+                        m
+                        for m in mappings
+                        if m[0] <= x + width / 2 <= m[0] + m[2]
+                        and m[1] <= y + height / 2 <= m[1] + m[3]
+                    ]
+                    if not matched:
+                        continue
+                    ax, ay, _, _, ox, oy, mx, my = matched[0]
+                    box = [
+                        round(ox + (x - ax) * mx),
+                        round(oy + (y - ay) * my),
+                        round(width * mx),
+                        round(height * my),
+                    ]
                 word = {"text": text, "confidence": confidence, "box_xywh": box}
                 duplicate = None
                 for j, previous in enumerate(words):
@@ -62,6 +172,8 @@ def read_words(image, *, profile="document"):
     finally:
         if scaled is not None:
             scaled.close()
+        if atlas is not None:
+            atlas.close()
 
 
 def line_regions(words, *, minimum_confidence=50):

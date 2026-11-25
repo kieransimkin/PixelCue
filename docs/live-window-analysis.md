@@ -41,8 +41,11 @@ budget memory for the chosen set. No general FPS or accuracy guarantee is made.
 Window OCR uses two bounded scales when the raster is at least 256 pixels on
 its shorter edge. The extra pass recovered a canvas-button label missed in the
 real benchmark. Word boxes map back to the original analysis raster and
-duplicates are merged. These are two views of the same Tesseract evidence,
-not independent model consensus. Ordinary document OCR retains one pass.
+duplicates are merged. A <=256-pixel search raster also finds up to four dark
+connected regions after small text strokes are eroded. One bounded contrast
+atlas pass can recover light text on dark native controls; its boxes also map
+back to the analysis raster. This is at most three Tesseract passes on the same
+input, not independent model consensus. Ordinary document OCR retains one pass.
 Adjacent confident word regions are returned as `result.lines`; they do not
 establish semantic roles or control actionability.
 

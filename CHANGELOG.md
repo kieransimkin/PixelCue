@@ -2,8 +2,8 @@
 
 - Add persistent local live-frame sessions, latest-frame queues, bounded MJPEG
   pipe and recorded-video harnesses with explicit ingestion/media clocks.
-- Add screen OCR scale diversity and shared adjacent-word regions after real
-  chroot canvas benchmarks exposed a missed control label.
+- Add screen OCR scale/contrast diversity and shared adjacent-word regions after
+  real chroot canvas and native-app benchmarks exposed missed control labels.
 - Retain a real app-stream demonstration; document model/session ownership and
   separate perception from input authority.
 
