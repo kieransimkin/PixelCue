@@ -45,7 +45,10 @@ def _transformer(name, image, checkpoint, allow_download, device, cache_dir=None
         session.close()
 
 
-def run_models(image, names, paths, *, allow_download=False, device="cpu", models_dir=None):
+def run_models(image, names, paths, *, allow_download=False, device="cpu", models_dir=None,
+               ocr_profile="document"):
+    if ocr_profile not in {"document", "screen"}:
+        raise ValueError("Unknown OCR profile")
     unknown = set(names) - PROFILES.keys()
     if unknown:
         raise ValueError(f"Unknown visual model(s): {', '.join(sorted(unknown))}")
@@ -62,11 +65,11 @@ def run_models(image, names, paths, *, allow_download=False, device="cpu", model
         try:
             if name == "ocr":
                 import pytesseract
-                data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT, timeout=30)
-                words = [{"text": text, "confidence": float(data["conf"][i]),
-                    "box_xywh": [int(data[k][i]) for k in ("left", "top", "width", "height")]}
-                    for i, text in enumerate(data["text"]) if text.strip() and float(data["conf"][i]) >= 0]
-                receipt.update(status="completed", result={"words": words,
+                from .ocr import read_words, line_regions
+                words, passes = read_words(image, profile=ocr_profile)
+                receipt["ocr_profile"] = ocr_profile
+                receipt["ocr_passes"] = passes
+                receipt.update(status="completed", result={"words": words, "lines": line_regions(words),
                     "caveat": "OCR confidence is engine-specific; boxes use the analysis raster; no font identification."},
                     resolved_revision=str(pytesseract.get_tesseract_version()))
             else:

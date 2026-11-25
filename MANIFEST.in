@@ -10,3 +10,5 @@ global-exclude __pycache__ *.py[cod] *.sqlite3 *.tsv
 
 recursive-include docs/branding *.svg *.png *.md
 include AGENTS.md CONTRIBUTING.md
+
+recursive-include tests/fixtures *.jpg *.png
