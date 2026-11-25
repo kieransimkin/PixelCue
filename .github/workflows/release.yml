@@ -41,7 +41,8 @@ jobs:
           if-no-files-found: error
       - name: Record completion assessment
         if: always()
-        run: echo 'Blogworthiness: FAIL. Routine model-free test and package replay; source evidence is this CI job and its retained distributions.' >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo 'Blogworthiness: FAIL. Routine model-free test and package replay; source evidence is this CI job and its retained distributions.' >> "$GITHUB_STEP_SUMMARY"
   pypi:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
