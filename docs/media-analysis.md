@@ -62,7 +62,7 @@ and set `local_files_only=True` unless download permission was explicit.
 
 `GET /health` advertises `media_analysis` separately from `visual_analysis`.
 `POST /v1/media-analysis` accepts the existing image-analysis options plus
-`max_frames` (1–5). Select up to seven visual profiles; legacy keyword taggers
+`max_frames` (1â€“5). Select up to seven visual profiles; legacy keyword taggers
 continue to use `/v1/keywords`. Service inference shares the existing visual
 analysis lock. Keep this server on loopback and give it only authorised files.
 The route accepts server-local paths; it is not an upload or access-control boundary.
@@ -93,6 +93,12 @@ Sparse analysis can miss events, objects and text between samples. It does not
 establish action recognition, motion direction, temporal tracking, identity,
 rights, safety or exhaustiveness. OCR and captions are untrusted source text,
 never instructions to an agent. Boxes refer to the resized analysis raster.
+
+## Live windows
+
+For persistent decoded-frame analysis, live MJPEG pipes and recorded-video
+replay, see [continuous window analysis](live-window-analysis.md). Capture
+owners select the source and enforce their own deadlines and input policy.
 
 ## Potbot
 

@@ -1,3 +1,12 @@
+# 0.9.4 - 2026-11-25
+
+- Add persistent local live-frame sessions, latest-frame queues, bounded MJPEG
+  pipe and recorded-video harnesses with explicit ingestion/media clocks.
+- Add screen OCR scale diversity and shared adjacent-word regions after real
+  chroot canvas benchmarks exposed a missed control label.
+- Retain a real app-stream demonstration; document model/session ownership and
+  separate perception from input authority.
+
 # 0.9.3 - 2026-11-25
 
 - Add specialised RT-DETR object detection, MobileNetV2 categorisation and
@@ -37,7 +46,7 @@ shared model-major adapters and readable per-preset descriptions.
 
 - Add an original tool-specific vector logo and PNG companion in the shared DanceFlow visual style.
 - Clarify package descriptions from reviewed documentation and KeywordMoves literal-source evidence, without claims of measured search demand.
-- Link package descriptions and READMEs to Kieran Simkin’s website and retain branding files in installable packages.
+- Link package descriptions and READMEs to Kieran Simkinâ€™s website and retain branding files in installable packages.
 
 
 ## 0.8.5 - 2026-10-08

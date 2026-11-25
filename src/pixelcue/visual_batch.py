@@ -112,7 +112,7 @@ class TransformerSession:
 def analyse_batch(paths, *, models=("clip", "blip"), keyword_models=(), model_paths=None,
                   allow_download=False, models_dir=None, device="cpu", max_edge=384,
                   background="#000000", prompt_profile="visualiser", session_factory=None,
-                  keyword_service=None):
+                  keyword_service=None, ocr_profile="document"):
     """Analyse <=64 selected rasters; each model is loaded once for this call.
 
     Callers should hash/configure caches and select frames BEFORE this method.
@@ -183,7 +183,8 @@ def analyse_batch(paths, *, models=("clip", "blip"), keyword_models=(), model_pa
                             if name == "ocr":
                                 # Optional, normally disabled for an abstract visualiser.
                                 from .visual_models import run_models
-                                receipt = run_models(image, ["ocr"], {}, models_dir=root)[0]
+                                receipt = run_models(image, ["ocr"], {}, models_dir=root,
+                                                     ocr_profile=ocr_profile)[0]
                             else:
                                 result = session.infer(image)
                                 manifest = Path(checkpoint) / "pixelcue-model.json"
