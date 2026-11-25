@@ -1,3 +1,12 @@
+# 0.9.3 - 2026-11-25
+
+- Add specialised RT-DETR object detection, MobileNetV2 categorisation and
+  Docling Heron document layout profiles alongside the existing OCR adapter.
+- Add bounded image/video analysis with decoded frame timestamps, source hashes,
+  model-major adapter reuse, independent failure receipts and a local HTTP route.
+- Document the optional Potbot typed tool integration and include an original
+  synthetic OCR/video demonstration. Models remain local and downloads opt-in.
+
 # 0.9.2
 
 Independent confidence-checked local optical flow, longer-baseline slow-motion

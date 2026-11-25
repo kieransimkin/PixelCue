@@ -17,6 +17,8 @@ from . import __version__
 from .model import DEFAULT_TAGGER_PROFILE, TAGGER_PROFILES
 from .service import KeywordExtractionService, UnsupportedMediaError
 from .visual_service import VisualAnalysisService
+from .media_analysis import analyse_media
+from .visual_models import PROFILES
 
 
 class KeywordRequest(BaseModel):
@@ -27,7 +29,7 @@ class KeywordRequest(BaseModel):
 
 class AnalysisRequest(BaseModel):
     path: str = Field(min_length=1)
-    models: list[str] = Field(default_factory=list, max_length=4)
+    models: list[str] = Field(default_factory=list, max_length=7)
     model_paths: dict[str, str] = Field(default_factory=dict)
     models_dir: str | None = None
     keyword_models: list[str] = Field(default_factory=list, max_length=5)
@@ -35,6 +37,10 @@ class AnalysisRequest(BaseModel):
     max_edge: int = Field(default=768, ge=32, le=2048)
     background: str = Field(default="#ffffff", pattern="^#[0-9a-fA-F]{6}$")
     device: str = Field(default="cpu", pattern="^(cpu|cuda|mps)$")
+
+
+class MediaAnalysisRequest(AnalysisRequest):
+    max_frames: int = Field(default=5, ge=1, le=5)
 
 
 @dataclass(frozen=True)
@@ -95,8 +101,25 @@ def create_server(
             "version": __version__,
             "models": sorted(TAGGER_PROFILES),
             "visual_analysis": {"schema": "pixelcue.visual-analysis/1", "route": "/v1/analysis",
-                                "models": ["clip", "dinov2", "blip", "ocr"]},
+                                "models": sorted(PROFILES)},
+            "media_analysis": {"schema": "pixelcue.media-analysis/1", "route": "/v1/media-analysis",
+                               "models": sorted(PROFILES), "max_frames": 5, "downloads_default": False},
         }
+
+    @http.post("/v1/media-analysis")
+    async def media_analysis(request: MediaAnalysisRequest) -> dict[str, Any]:
+        if request.keyword_models:
+            raise HTTPException(status_code=422, detail="Use /v1/keywords for existing VLM taggers")
+        options = request.model_dump(exclude={"keyword_models"})
+        def run():
+            with visual_service._lock:
+                return analyse_media(**options)
+        try:
+            return await asyncio.to_thread(run)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @http.post("/v1/analysis")
     async def analysis(request: AnalysisRequest) -> dict[str, Any]:

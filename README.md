@@ -1,5 +1,20 @@
 # PixelCue
 
+## Fast image/video tools and specialised models
+
+`python -m pixelcue.media_analysis IMAGE_OR_VIDEO --models rtdetr mobilenet layout ocr`
+selects object detection, whole-image categorisation, document layout and OCR.
+The same bounded API is available as `POST /v1/media-analysis`; omit models for
+measurements alone. Videos retain up to five diverse samples with decoded frame
+times and reuse each selected adapter across the batch. Downloads stay disabled
+by default and missing models remain explicit. See the
+[guide, model sources, limits and reproducible demonstration](docs/media-analysis.md)
+and the optional [Potbot tool](https://github.com/Synsphere/Potbot/blob/main/docs/pixelcue-tool.md).
+
+![Actual OCR on the original synthetic tool demonstration](docs/images/media-analysis-ocr.png)
+
+*Real Tesseract output on a synthetic fixture; not an object/layout accuracy benchmark.*
+
 ## Complete preset portraits and contact sheets (0.9.2)
 
 The hybrid workflow combines reference-free style, colour, shape and movement
@@ -146,7 +161,7 @@ All downloaded models and model-specific caches default to the owning project's 
 
 PixelCue now owns reusable bounded image measurements and explicit visual-model adapters for visual-language tools such as [PrismMoves](https://github.com/kieransimkin/PrismMoves). No separate PrismMoves analysis engine is needed.
 
-`POST /v1/analysis` accepts a server-local `path`, optional `models` (`clip`, `dinov2`, `blip`, `ocr`), `model_paths`, `keyword_models` (existing PixelCue VLM profiles), `max_edge` (32–2048, default 768), `background` (`#RRGGBB`, default white), `device` (`cpu`, `cuda`, `mps`) and `allow_download` (default false). `/health.visual_analysis` advertises the route and model names. The existing bare-list `/v1/keywords` and Socket.IO contracts remain unchanged.
+`POST /v1/analysis` accepts a server-local `path`, optional `models` (`clip`, `dinov2`, `blip`, `ocr`, `rtdetr`, `mobilenet`, `layout`), `model_paths`, `keyword_models` (existing PixelCue VLM profiles), `max_edge` (32–2048, default 768), `background` (`#RRGGBB`, default white), `device` (`cpu`, `cuda`, `mps`) and `allow_download` (default false). `/health.visual_analysis` advertises the route and model names. The existing bare-list `/v1/keywords` and Socket.IO contracts remain unchanged.
 
 ```python
 from pixelcue.visual_service import VisualAnalysisService, compare_profiles

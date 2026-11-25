@@ -88,7 +88,8 @@ def _fingerprint_distance(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
 
 
-def _frames_at_timestamps(path: Path, timestamps: list[float]) -> list[tuple[float, Image.Image]]:
+def _frames_at_timestamps(path: Path, timestamps: list[float], *, evidence=False,
+                          max_edge=None, failures=None) -> list:
     """Seek several timestamps while opening the container only once."""
     import av
 
@@ -98,26 +99,93 @@ def _frames_at_timestamps(path: Path, timestamps: list[float]) -> list[tuple[flo
             if not container.streams.video:
                 return output
             stream = container.streams.video[0]
+            origin = float((stream.start_time or 0) * stream.time_base) if stream.time_base else 0.0
             for seconds in timestamps:
                 try:
                     if stream.time_base is not None and seconds > 0:
-                        offset = int(seconds / float(stream.time_base))
+                        offset = int((seconds + origin) / float(stream.time_base))
                         container.seek(offset, stream=stream, any_frame=False, backward=True)
 
                     candidate = None
-                    for frame in container.decode(stream):
-                        candidate = frame
-                        frame_t = frame.time
-                        if seconds <= 0 or frame_t is None or frame_t >= seconds - 0.25:
+                    reached = False
+                    exhausted_budget = False
+                    for index, frame in enumerate(container.decode(stream)):
+                        if evidence and index >= 240:
+                            exhausted_budget = True
                             break
+                        candidate = frame
+                        frame_t = None if frame.time is None else frame.time - origin
+                        tolerance = 0.0 if evidence else 0.25
+                        if seconds <= 0 or frame_t is None or frame_t >= seconds - tolerance:
+                            reached = True
+                            break
+                    if evidence and (candidate is None or (not reached and exhausted_budget)):
+                        if failures is not None:
+                            failures.append({"requested_seconds": seconds, "reason": "No frame reached within the 240-frame seek budget"})
+                        continue
                     if candidate is not None:
-                        output.append((seconds, candidate.to_image().convert("RGB")))
-                except Exception:
+                        if candidate.width * candidate.height > 40_000_000:
+                            raise ValueError("Video frame exceeds pixel limit")
+                        image = candidate.to_image().convert("RGB")
+                        dimensions = list(image.size)
+                        if max_edge is not None:
+                            image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+                        clock = {"requested_seconds": seconds,
+                                 "timestamp_seconds": None if candidate.time is None else candidate.time - origin,
+                                 "pts": candidate.pts,
+                                 "time_base": str(candidate.time_base) if candidate.time_base else None,
+                                 "stream_origin_seconds": origin, "dimensions": dimensions}
+                        output.append((clock if evidence else seconds, image))
+                except Exception as exc:
+                    if failures is not None:
+                        failures.append({"requested_seconds": seconds, "reason": type(exc).__name__})
                     # A bad seek should lose one candidate, not the whole video.
                     continue
-    except Exception:
+    except Exception as exc:
+        for _, image in output:
+            image.close()
+        if failures is not None:
+            failures.append({"requested_seconds": None, "reason": type(exc).__name__})
         return []
     return output
+
+
+def sample_video_evidence(path: Path, *, max_frames=5, max_edge=768):
+    """Bounded diverse samples with decoded PTS, rather than requested seek times.
+
+    Caller owns returned images. Missing clocks stay unknown; the failure ledger
+    retains every unsuccessful seek. This is sparse inspection, not action tracking.
+    """
+    if type(max_frames) is not int or not 1 <= max_frames <= 5:
+        raise ValueError("max_frames must be 1..5")
+    if type(max_edge) is not int or not 32 <= max_edge <= 2048:
+        raise ValueError("max_edge must be 32..2048")
+    duration = video_duration_seconds(path)
+    failures = []
+    count = min(7, max_frames + 2) if duration and duration > 0 else 1
+    end = max(0.0, duration - min(0.25, duration * 0.01)) if duration else 0.0
+    timestamps = [end * i / (count - 1) for i in range(count)] if count > 1 else [0.0]
+    candidates = _frames_at_timestamps(path, timestamps, evidence=True, max_edge=max_edge,
+                                     failures=failures)
+    unique, seen = [], set()
+    for clock, image in candidates:
+        key = (clock["pts"], clock["time_base"])
+        if clock["pts"] is not None and key in seen:
+            image.close()
+        else:
+            seen.add(key)
+            unique.append((clock, image, _frame_fingerprint(image)))
+    selected = [0] if unique else []
+    remaining = set(range(1, len(unique)))
+    while remaining and len(selected) < max_frames:
+        chosen = max(sorted(remaining), key=lambda i: min(
+            _fingerprint_distance(unique[i][2], unique[j][2]) for j in selected))
+        selected.append(chosen)
+        remaining.remove(chosen)
+    for index in remaining:
+        unique[index][1].close()
+    return {"frames": [(unique[i][0], unique[i][1]) for i in sorted(selected)],
+            "duration_seconds": duration, "candidate_count": count, "failures": failures}
 
 
 def sample_video_frames(

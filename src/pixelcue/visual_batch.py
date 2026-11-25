@@ -9,10 +9,12 @@ import hashlib
 import json
 from pathlib import Path
 import time
+from dataclasses import dataclass
 
 from .model_paths import project_models_dir
 from .visual_analysis import ANALYSIS_VERSION, load_image, measure_image
 from .visual_models import PROFILES, PROMPTS, _version
+from .vision_tasks import SPECIALIST_PROFILES, SpecialistSession
 
 BATCH_VERSION = "1.0.0"
 # Deliberately spatial only: a picture of a spiral is NOT evidence of rotation.
@@ -46,6 +48,18 @@ VISUALISER_PROMPTS["aesthetic"] = [
 
 def prompt_digest(bank):
     return hashlib.sha256(json.dumps(bank, sort_keys=True).encode()).hexdigest()
+
+
+@dataclass
+class PreparedRaster:
+    """Decoded PixelCue raster and retained source metadata; owned by the caller."""
+    image: object
+    source: dict
+
+
+def create_session(name, checkpoint, **options):
+    cls = SpecialistSession if name in SPECIALIST_PROFILES else TransformerSession
+    return cls(name, checkpoint, **options)
 
 
 class TransformerSession:
@@ -116,7 +130,7 @@ def analyse_batch(paths, *, models=("clip", "blip"), keyword_models=(), model_pa
         raise ValueError("Unknown prompt profile")
     root = project_models_dir(models_dir)
     prompts = VISUALISER_PROMPTS if prompt_profile == "visualiser" else PROMPTS
-    session_factory = session_factory or TransformerSession
+    session_factory = session_factory or create_session
     model_paths = model_paths or {}
     if set(model_paths) - set(models):
         raise ValueError("Model path overrides must name a selected model")
@@ -124,14 +138,20 @@ def analyse_batch(paths, *, models=("clip", "blip"), keyword_models=(), model_pa
     try:
         for path in paths:
             try:
-                image, source = load_image(path, max_edge=max_edge, background=background)
+                if isinstance(path, PreparedRaster):
+                    image, source = path.image.copy(), dict(path.source)
+                    if image.mode != "RGB" or max(image.size) > max_edge:
+                        image.close()
+                        raise ValueError("Prepared raster must be bounded RGB")
+                else:
+                    image, source = load_image(path, max_edge=max_edge, background=background)
                 analysis = {"schema": "pixelcue.visual-analysis/1", "analysis_version": ANALYSIS_VERSION,
                             "source": source, "measurements": measure_image(image), "models": [],
                             "limits": ["Captions and prompt matches are hypotheses, not motion or intent."]}
-                items.append({"status": "completed", "name": Path(path).name, "analysis": analysis})
+                items.append({"status": "completed", "name": source["name"], "analysis": analysis})
                 loaded.append(image)
             except (OSError, ValueError):
-                items.append({"status": "unavailable", "name": Path(path).name,
+                items.append({"status": "unavailable", "name": "raster" if isinstance(path, PreparedRaster) else Path(path).name,
                               "reason": "Image unavailable or invalid"})
                 loaded.append(None)
         for name in dict.fromkeys(models):
@@ -191,7 +211,9 @@ def analyse_batch(paths, *, models=("clip", "blip"), keyword_models=(), model_pa
                 receipt = {"name": "pixelcue-tagger:"+name, "evidence_class": "interpretation",
                            "allow_download": allow_download}
                 started = time.monotonic()
-                if not allow_download:
+                if isinstance(path, PreparedRaster):
+                    receipt.update(status="unavailable", reason="Keyword taggers require an encoded file; select visual models for decoded video frames")
+                elif not allow_download:
                     receipt.update(status="unavailable", reason="Tagger download permission not given")
                 elif keyword_service is None:
                     receipt.update(status="unavailable", reason="PixelCue keyword service unavailable")

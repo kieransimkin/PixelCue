@@ -7,8 +7,10 @@ from pathlib import Path
 import json
 
 from .model_paths import project_models_dir
+from .vision_tasks import SPECIALIST_PROFILES
 
 PROFILES = {
+    **SPECIALIST_PROFILES,
     "clip": {"checkpoint": "openai/clip-vit-base-patch32", "task": "prompt-relative visual language similarity"},
     "dinov2": {"checkpoint": "facebook/dinov2-small", "task": "visual embedding for reference comparison"},
     "blip": {"checkpoint": "Salesforce/blip-image-captioning-base", "task": "scene caption hypothesis"},
@@ -32,9 +34,9 @@ def _version(name):
 
 def _transformer(name, image, checkpoint, allow_download, device, cache_dir=None):
     """Single-image compatibility wrapper over the same reusable batch adapter."""
-    from .visual_batch import TransformerSession
+    from .visual_batch import create_session
     root = cache_dir or project_models_dir()/".cache"/"huggingface"
-    session = TransformerSession(name, checkpoint, allow_download=allow_download,
+    session = create_session(name, checkpoint, allow_download=allow_download,
                                  device=device, cache_dir=root, prompts=PROMPTS)
     try:
         # The caller retains the model briefly for its original metadata contract.
@@ -88,8 +90,8 @@ def install_models(names, *, models_dir=None):
     import hashlib
     from huggingface_hub import HfApi, snapshot_download
     root = project_models_dir(models_dir)
-    if set(names)-{"clip", "dinov2", "blip"}:
-        raise ValueError("Installer supports clip, dinov2 and blip; OCR uses a separate Tesseract installation")
+    if set(names) - (PROFILES.keys() - {"ocr"}):
+        raise ValueError("Unknown neural profile; OCR uses a separate Tesseract installation")
     installed = []
     for name in dict.fromkeys(names):
         checkpoint = PROFILES[name]["checkpoint"]
@@ -116,7 +118,7 @@ def install_models(names, *, models_dir=None):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Explicitly install selected PixelCue visual models into project-local models/")
-    parser.add_argument("models", nargs="+", choices=["clip", "dinov2", "blip"])
+    parser.add_argument("models", nargs="+", choices=sorted(PROFILES.keys() - {"ocr"}))
     parser.add_argument("--models-dir", type=Path, default=None)
     args = parser.parse_args()
     for receipt in install_models(args.models, models_dir=args.models_dir):

@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install model-free test and package tools
-        run: python -m pip install build twine pytest pillow numpy 'opencv-python-headless>=4.10,<5' PySide6 fastapi python-socketio uvicorn 'httpx2>=2,<3' platformdirs python-magic py7zr rarfile
+        run: python -m pip install build twine pytest pillow numpy av 'opencv-python-headless>=4.10,<5' PySide6 fastapi python-socketio uvicorn 'httpx2>=2,<3' platformdirs python-magic py7zr rarfile
       - name: Run service, media and thumbnail tests without downloading models
         run: python -m pytest -q
       - name: Build and validate installable distributions
@@ -39,6 +39,10 @@ jobs:
           name: pixelcue-dist
           path: dist/*
           if-no-files-found: error
+      - name: Record completion assessment
+        if: always()
+        run: |
+          echo 'Blogworthiness: FAIL. Routine model-free test and package replay; source evidence is this CI job and its retained distributions.' >> "$GITHUB_STEP_SUMMARY"
   pypi:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
